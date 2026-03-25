@@ -1,0 +1,41 @@
+{
+  "name": "chronicle-engine",
+  "version": "1.0.0-beta.0",
+  "description": "Chronicle Engine for OpenClaw: remote-authority memory, retrieval, and local context orchestration",
+  "type": "module",
+  "main": "index.ts",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "chronicle-engine",
+    "memory",
+    "remote-backend",
+    "context-orchestration",
+    "autorecall",
+    "governance",
+    "distill",
+    "retrieval"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/furedericca-lab/chronicle-engine.git"
+  },
+  "author": "furedericca",
+  "license": "MIT",
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test --test-name-pattern='.' test/backend-client-retry-idempotency.test.mjs test/config-session-strategy-cutover.test.mjs test/auto-recall-behavioral.test.mjs test/noise-filter-chinese.mjs test/remote-backend-shell-integration.test.mjs test/governance-tools.test.mjs"
+  },
+  "devDependencies": {
+    "commander": "^14.0.0",
+    "jiti": "^2.6.0",
+    "typescript": "^5.9.3"
+  }
+}

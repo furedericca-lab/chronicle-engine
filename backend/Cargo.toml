@@ -1,0 +1,39 @@
+[package]
+name = "memory-lancedb-pro-backend"
+version = "1.0.0-beta.0"
+edition = "2021"
+authors = ["furedericca"]
+license = "MIT"
+description = "Remote backend for the OpenClaw Chronicle Engine memory plugin."
+repository = "https://github.com/furedericca-lab/chronicle-engine"
+
+[lib]
+name = "memory_lancedb_pro_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "memory-lancedb-pro-backend"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+arrow-array = "57.2"
+arrow-schema = "57.2"
+axum = { version = "0.7", features = ["macros", "json"] }
+clap = { version = "4.5", features = ["derive"] }
+futures = "0.3"
+http = "1.1"
+lancedb = "0.26.2"
+parking_lot = "0.12"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+regex = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+toml = "0.8"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

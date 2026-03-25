@@ -1,0 +1,543 @@
+{
+  "id": "chronicle-engine",
+  "name": "Chronicle Engine",
+  "description": "Historical-memory engine for OpenClaw with remote backend authority and local context orchestration.",
+  "version": "1.0.0-beta.0",
+  "kind": "memory",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "remoteBackend": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Remote memory backend transport configuration. This is the canonical and only supported runtime authority mode.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "const": true,
+            "default": true,
+            "description": "Must be true. Local-authority runtime has been removed."
+          },
+          "baseURL": {
+            "type": "string",
+            "description": "Remote backend base URL (for example http://127.0.0.1:8080)"
+          },
+          "authToken": {
+            "type": "string",
+            "description": "Runtime bearer token used for data-plane backend calls"
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 120000,
+            "default": 10000
+          },
+          "maxRetries": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5,
+            "default": 1
+          },
+          "retryBackoffMs": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 5000,
+            "default": 250
+          }
+        },
+        "required": [
+          "enabled",
+          "baseURL",
+          "authToken"
+        ]
+      },
+      "enableManagementTools": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable caller-scoped management/debug tools such as memory_list, memory_stats, memory_distill_enqueue, memory_distill_status, memory_recall_debug, and governance review/extract actions."
+      },
+      "sessionStrategy": {
+        "type": "string",
+        "enum": [
+          "autoRecall",
+          "systemSessionMemory",
+          "none"
+        ],
+        "default": "systemSessionMemory",
+        "description": "Choose session pipeline: plugin autoRecall behavioral guidance, built-in session-memory, or none."
+      },
+      "autoCapture": {
+        "type": "boolean"
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "default": false
+      },
+      "autoRecallMinLength": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 15,
+        "description": "Minimum prompt length (in characters) to trigger auto-recall. Prompts shorter than this are skipped. Default: 15 for English, 6 for CJK."
+      },
+      "autoRecallMinRepeated": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+        "default": 0,
+        "description": "Minimum number of turns before the same memory can be recalled again in the same session. Set to 0 to disable deduplication (default behavior: inject all memories)."
+      },
+      "autoRecallTopK": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "default": 3,
+        "description": "Maximum number of rows injected into <relevant-memories> for each turn."
+      },
+      "autoRecallSelectionMode": {
+        "type": "string",
+        "enum": [
+          "mmr"
+        ],
+        "default": "mmr",
+        "description": "Generic Auto-Recall final top-k mode over ordinary backend-returned rows. mmr is the canonical backend-owned ranking path followed by direct prompt injection truncation."
+      },
+      "autoRecallCategories": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "preference",
+            "fact",
+            "decision",
+            "entity",
+            "other"
+          ]
+        },
+        "default": [
+          "preference",
+          "fact",
+          "decision",
+          "entity",
+          "other"
+        ],
+        "description": "Allowlist of memory categories eligible for generic Auto-Recall."
+      },
+      "autoRecallExcludeBehavioral": {
+        "type": "boolean",
+        "default": true,
+        "description": "Exclude behavioral-guidance rows from generic Auto-Recall."
+      },
+      "autoRecallMaxAgeDays": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3650,
+        "default": 30,
+        "description": "Drop Auto-Recall candidates older than this many days."
+      },
+      "autoRecallMaxEntriesPerKey": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "default": 10,
+        "description": "Per normalized text key, keep only the most recent N entries before Auto-Recall final trimming."
+      },
+      "captureAssistant": {
+        "type": "boolean"
+      },
+      "distill": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Optional backend-native automatic distill cadence. Runtime only decides when to enqueue; backend remains source and persistence authority.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "session-lessons",
+              "governance-candidates"
+            ],
+            "default": "session-lessons"
+          },
+          "persistMode": {
+            "type": "string",
+            "enum": [
+              "artifacts-only",
+              "persist-memory-rows"
+            ],
+            "default": "artifacts-only"
+          },
+          "everyTurns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 5,
+            "description": "Automatically enqueue one backend distill job every N completed user turns in the same session."
+          },
+          "maxMessages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 400
+          },
+          "maxArtifacts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 20
+          },
+          "chunkChars": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 24000,
+            "default": 12000
+          },
+          "chunkOverlapMessages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32,
+            "default": 10
+          }
+        }
+      },
+      "governance": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "ensureBacklogFiles": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "autoRecallBehavioral": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Prompt-local behavioral guidance knobs for the autoRecall architecture. injectMode, recall.*, and reminder settings affect active runtime behavior.",
+        "properties": {
+          "injectMode": {
+            "type": "string",
+            "enum": [
+              "durable-only",
+              "durable+adaptive"
+            ],
+            "default": "durable+adaptive"
+          },
+          "errorReminderMaxEntries": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 3
+          },
+          "dedupeErrorSignals": {
+            "type": "boolean",
+            "default": true
+          },
+          "beforeResetNote": {
+            "type": "boolean",
+            "default": true
+          },
+          "skipSubagentBootstrap": {
+            "type": "boolean",
+            "default": true
+          },
+          "ensureGovernanceFiles": {
+            "type": "boolean",
+            "default": true
+          },
+          "recall": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "fixed",
+                  "dynamic"
+                ],
+                "default": "fixed"
+              },
+              "topK": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 6
+              },
+              "includeKinds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "durable",
+                    "adaptive"
+                  ]
+                },
+                "default": [
+                  "durable"
+                ]
+              },
+              "maxAgeDays": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3650,
+                "default": 45
+              },
+              "maxEntriesPerKey": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 10
+              },
+              "minRepeated": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "default": 2
+              },
+              "minScore": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 5,
+                "default": 0.18
+              },
+              "minPromptLength": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "default": 8
+              }
+            }
+          }
+        }
+      }
+    },
+    "required": [
+      "remoteBackend"
+    ]
+  },
+  "uiHints": {
+    "remoteBackend.enabled": {
+      "label": "Enable Remote Backend",
+      "help": "Route runtime memory authority through the remote HTTP backend (canonical mode). `remoteBackend.baseURL` and `remoteBackend.authToken` are required.",
+      "advanced": true
+    },
+    "remoteBackend.baseURL": {
+      "label": "Remote Backend Base URL",
+      "placeholder": "http://127.0.0.1:8080",
+      "help": "Base URL for the remote memory backend service.",
+      "advanced": true
+    },
+    "remoteBackend.authToken": {
+      "label": "Remote Backend Token",
+      "sensitive": true,
+      "placeholder": "runtime-token",
+      "help": "Bearer token for authenticated runtime data-plane calls.",
+      "advanced": true
+    },
+    "remoteBackend.timeoutMs": {
+      "label": "Remote Timeout (ms)",
+      "help": "HTTP timeout per backend request.",
+      "advanced": true
+    },
+    "remoteBackend.maxRetries": {
+      "label": "Remote Max Retries",
+      "help": "Retry count for retryable backend failures.",
+      "advanced": true
+    },
+    "remoteBackend.retryBackoffMs": {
+      "label": "Remote Retry Backoff (ms)",
+      "help": "Base retry backoff between backend attempts.",
+      "advanced": true
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Automatically capture important information from conversations"
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Automatically inject relevant memories into context"
+    },
+    "autoRecallMinLength": {
+      "label": "Auto-Recall Min Length",
+      "help": "Minimum prompt length to trigger auto-recall (shorter prompts are skipped). Default: 15 chars for English, 6 for CJK.",
+      "advanced": true
+    },
+    "autoRecallMinRepeated": {
+      "label": "Auto-Recall Min Repeated",
+      "help": "Minimum number of conversation turns before a specific memory can be re-injected in the same session.",
+      "advanced": true
+    },
+    "autoRecallTopK": {
+      "label": "Auto-Recall Top K",
+      "help": "Maximum rows injected into <relevant-memories> each turn.",
+      "advanced": true
+    },
+    "autoRecallSelectionMode": {
+      "label": "Auto-Recall Selection Mode",
+      "help": "Generic final top-k mode over ordinary backend rows. mmr is the canonical backend-owned ranking path followed by direct prompt injection truncation.",
+      "advanced": true
+    },
+    "autoRecallCategories": {
+      "label": "Auto-Recall Categories",
+      "help": "Allowlist of categories eligible for generic auto-recall.",
+      "advanced": true
+    },
+    "autoRecallExcludeBehavioral": {
+      "label": "Exclude Behavioral Guidance",
+      "help": "Exclude behavioral-guidance rows from <relevant-memories>.",
+      "advanced": true
+    },
+    "autoRecallMaxAgeDays": {
+      "label": "Auto-Recall Max Age (days)",
+      "help": "Drop auto-recall candidates older than this many days.",
+      "advanced": true
+    },
+    "autoRecallMaxEntriesPerKey": {
+      "label": "Auto-Recall Max Entries Per Key",
+      "help": "Per normalized text key, keep only the most recent N entries before top-k trimming.",
+      "advanced": true
+    },
+    "captureAssistant": {
+      "label": "Capture Assistant Messages",
+      "help": "Also auto-capture assistant messages (default false to reduce memory pollution)",
+      "advanced": true
+    },
+    "distill.enabled": {
+      "label": "Automatic Distill",
+      "help": "Automatically enqueue backend-native session-transcript distill jobs on a turn cadence.",
+      "advanced": true
+    },
+    "distill.mode": {
+      "label": "Distill Mode",
+      "help": "Which backend distill output family to enqueue automatically.",
+      "advanced": true
+    },
+    "distill.persistMode": {
+      "label": "Distill Persist Mode",
+      "help": "Persist artifacts only, or persist distilled memory rows when mode=session-lessons.",
+      "advanced": true
+    },
+    "distill.everyTurns": {
+      "label": "Distill Every N Turns",
+      "help": "One user send counts as one turn. When the session reaches the configured cadence, runtime enqueues a backend distill job.",
+      "advanced": true
+    },
+    "distill.maxMessages": {
+      "label": "Distill Max Messages",
+      "help": "Optional cap on transcript rows included in the automatic distill source window.",
+      "advanced": true
+    },
+    "distill.maxArtifacts": {
+      "label": "Distill Max Artifacts",
+      "help": "Maximum number of final artifacts kept by backend distill reduction.",
+      "advanced": true
+    },
+    "distill.chunkChars": {
+      "label": "Distill Chunk Chars",
+      "help": "Character budget used by backend distill windowing.",
+      "advanced": true
+    },
+    "distill.chunkOverlapMessages": {
+      "label": "Distill Chunk Overlap Messages",
+      "help": "Message overlap retained between backend distill windows.",
+      "advanced": true
+    },
+    "sessionStrategy": {
+      "label": "Session Strategy",
+      "help": "autoRecall / systemSessionMemory / none. autoRecall keeps plugin-side behavioral guidance planning while backend remains memory authority.",
+      "advanced": true
+    },
+    "governance.enabled": {
+      "label": "Governance",
+      "help": "Enable governance backlog tools"
+    },
+    "governance.ensureBacklogFiles": {
+      "label": "Ensure Governance Files",
+      "help": "Auto-create .governance backlog files when missing",
+      "advanced": true
+    },
+    "autoRecallBehavioral.beforeResetNote": {
+      "label": "Behavioral Reset Note",
+      "help": "Append a behavioral guidance /note before /new and /reset",
+      "advanced": true
+    },
+    "autoRecallBehavioral.skipSubagentBootstrap": {
+      "label": "Skip Subagent Bootstrap",
+      "help": "Do not inject reminder file into subagent bootstrap context",
+      "advanced": true
+    },
+    "autoRecallBehavioral.ensureGovernanceFiles": {
+      "label": "Ensure Governance Files",
+      "help": "Auto-create .governance files when reminder/bootstrap hooks need them",
+      "advanced": true
+    },
+    "autoRecallBehavioral.injectMode": {
+      "label": "Behavioral Inject Mode",
+      "help": "durable-only or durable+adaptive",
+      "advanced": true
+    },
+    "autoRecallBehavioral.errorReminderMaxEntries": {
+      "label": "Error Reminder Max Entries",
+      "help": "Max recent error hints injected into prompt",
+      "advanced": true
+    },
+    "autoRecallBehavioral.dedupeErrorSignals": {
+      "label": "Dedupe Error Signals",
+      "help": "Deduplicate repeated error signatures per session",
+      "advanced": true
+    },
+    "autoRecallBehavioral.recall.mode": {
+      "label": "Behavioral Recall Mode",
+      "help": "fixed keeps always-on durable guidance injection; dynamic enables prompt-gated behavioral recall.",
+      "advanced": true
+    },
+    "autoRecallBehavioral.recall.topK": {
+      "label": "Behavioral Recall Top K",
+      "help": "Maximum rows injected into <behavioral-guidance> in dynamic mode.",
+      "advanced": true
+    },
+    "autoRecallBehavioral.recall.includeKinds": {
+      "label": "Behavioral Recall Include Kinds",
+      "help": "Which behavioral guidance kinds are considered in dynamic mode (durable/adaptive).",
+      "advanced": true
+    },
+    "autoRecallBehavioral.recall.maxAgeDays": {
+      "label": "Behavioral Recall Max Age (days)",
+      "help": "Drop dynamic behavioral candidates older than this many days.",
+      "advanced": true
+    },
+    "autoRecallBehavioral.recall.maxEntriesPerKey": {
+      "label": "Behavioral Recall Max Entries Per Key",
+      "help": "Per normalized key, keep only the most recent N rows before dynamic aggregation.",
+      "advanced": true
+    },
+    "autoRecallBehavioral.recall.minRepeated": {
+      "label": "Behavioral Recall Min Repeated",
+      "help": "Minimum turn gap before re-injecting the same dynamic behavioral row in one session.",
+      "advanced": true
+    },
+    "autoRecallBehavioral.recall.minScore": {
+      "label": "Behavioral Recall Min Score",
+      "help": "Minimum aggregated score required for dynamic behavioral injection.",
+      "advanced": true
+    },
+    "autoRecallBehavioral.recall.minPromptLength": {
+      "label": "Behavioral Recall Min Prompt Length",
+      "help": "Prompts shorter than this are skipped in dynamic behavioral mode.",
+      "advanced": true
+    },
+    "enableManagementTools": {
+      "label": "Management Tools",
+      "help": "Enable caller-scoped management/debug tools such as memory_list, memory_stats, memory_distill_enqueue, memory_distill_status, memory_recall_debug, and governance review/extract actions.",
+      "advanced": true
+    }
+  }
+}

@@ -1,0 +1,799 @@
+import { describe, it, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import jitiFactory from "jiti";
+
+const testDir = path.dirname(fileURLToPath(import.meta.url));
+const pluginSdkStubPath = path.resolve(testDir, "helpers", "openclaw-plugin-sdk-stub.mjs");
+const jiti = jitiFactory(import.meta.url, {
+  interopDefault: true,
+  alias: {
+    "openclaw/plugin-sdk": pluginSdkStubPath,
+  },
+});
+
+const pluginModule = jiti("../index.ts");
+const chronicleEnginePlugin = pluginModule.default || pluginModule;
+const { parsePluginConfig } = pluginModule;
+const { getDisplayCategoryTag } = jiti("./helpers/behavioral-guidance-reference.ts");
+const {
+  classifyBehavioralGuidanceRetry,
+  computeBehavioralGuidanceRetryDelayMs,
+  isBehavioralGuidanceNonRetryError,
+  isTransientBehavioralGuidanceUpstreamError,
+  runWithBehavioralGuidanceTransientRetryOnce,
+} = jiti("./helpers/behavioral-guidance-reference.ts");
+const {
+  createDynamicRecallSessionState,
+  clearDynamicRecallSessionState,
+  orchestrateDynamicRecall,
+  normalizeRecallTextKey,
+} = jiti("../src/context/recall-engine.ts");
+const { renderTaggedPromptBlock, renderErrorDetectedBlock } = jiti("../src/context/prompt-block-renderer.ts");
+const { createSessionExposureState } = jiti("../src/context/session-exposure-state.ts");
+const { createAutoRecallPlanner } = jiti("../src/context/auto-recall-orchestrator.ts");
+const { createAutoRecallBehavioralPlanner } = jiti("../src/context/auto-recall-orchestrator.ts");
+const { shouldSkipRetrieval } = jiti("../src/context/adaptive-retrieval.ts");
+
+function makeEntry({ timestamp, metadata, category = "behavioral", scope = "global" }) {
+  return {
+    id: `mem-${Math.random().toString(36).slice(2, 8)}`,
+    text: "behavioral-entry",
+    vector: [],
+    category,
+    scope,
+    importance: 0.7,
+    timestamp,
+    metadata: JSON.stringify(metadata),
+  };
+}
+
+function baseConfig() {
+  return {
+    remoteBackend: {
+      enabled: true,
+      baseURL: "http://backend.test",
+      authToken: "token-test",
+    },
+  };
+}
+
+function createPluginApiHarness({ pluginConfig, resolveRoot }) {
+  const eventHandlers = new Map();
+  const commandHooks = new Map();
+  const logs = [];
+
+  const api = {
+    pluginConfig,
+    resolvePath(target) {
+      if (typeof target !== "string") return target;
+      if (path.isAbsolute(target)) return target;
+      return path.join(resolveRoot, target);
+    },
+    logger: {
+      info(message) {
+        logs.push({ level: "info", message: String(message) });
+      },
+      warn(message) {
+        logs.push({ level: "warn", message: String(message) });
+      },
+      debug(message) {
+        logs.push({ level: "debug", message: String(message) });
+      },
+    },
+    registerTool() {},
+    registerCli() {},
+    registerService() {},
+    on(eventName, handler, meta) {
+      const list = eventHandlers.get(eventName) || [];
+      list.push({ handler, meta });
+      eventHandlers.set(eventName, list);
+    },
+    registerHook(hookName, handler, meta) {
+      const list = commandHooks.get(hookName) || [];
+      list.push({ handler, meta });
+      commandHooks.set(hookName, list);
+    },
+  };
+
+  return {
+    api,
+    eventHandlers,
+    commandHooks,
+    logs,
+  };
+}
+
+describe("auto recall orchestration", () => {
+  describe("adaptive retrieval control prompt skip gate", () => {
+    it("skips session-start boilerplate containing /new or /reset", () => {
+      const prompt = "A new session was started via /new or /reset. Keep this in mind.";
+      assert.equal(shouldSkipRetrieval(prompt), true);
+    });
+
+    it("skips startup boilerplate containing session startup sequence text", () => {
+      const prompt = "Execute your Session Startup sequence now before continuing.";
+      assert.equal(shouldSkipRetrieval(prompt), true);
+    });
+
+    it("skips /note handoff/control prompts", () => {
+      const prompt = "Control wrapper line\n/note behavioral-guidance (before reset): preserve incident timeline.";
+      assert.equal(shouldSkipRetrieval(prompt), true);
+    });
+
+    it("does not skip a normal user task prompt", () => {
+      const prompt = "Please draft a rollback checklist for mosdns and rclone incidents.";
+      assert.equal(shouldSkipRetrieval(prompt), false);
+    });
+  });
+
+  describe("display category tags", () => {
+    it("uses scope tag for behavioral entries", () => {
+      assert.equal(
+        getDisplayCategoryTag({
+          category: "behavioral",
+          scope: "project-a",
+          metadata: JSON.stringify({ type: "behavioral-guidance-item", itemKind: "invariant" }),
+        }),
+        "behavioral:project-a"
+      );
+
+      assert.equal(
+        getDisplayCategoryTag({
+          category: "behavioral",
+          scope: "project-b",
+          metadata: JSON.stringify({
+            type: "behavioral-guidance-item",
+            behavioralVersion: 4,
+            itemKind: "derived",
+          }),
+        }),
+        "behavioral:project-b"
+      );
+    });
+
+    it("uses scope tag for behavioral rows with optional metadata fields", () => {
+      assert.equal(
+        getDisplayCategoryTag({
+          category: "behavioral",
+          scope: "global",
+          metadata: JSON.stringify({
+            type: "behavioral-guidance-item",
+            behavioralVersion: 4,
+            itemKind: "invariant",
+            baseWeight: 1.1,
+          }),
+        }),
+        "behavioral:global"
+      );
+
+      assert.equal(
+        getDisplayCategoryTag({
+          category: "behavioral",
+          scope: "global",
+          metadata: JSON.stringify({
+            type: "behavioral-guidance-event",
+            behavioralVersion: 4,
+            eventId: "behavioral-test",
+          }),
+        }),
+        "behavioral:global"
+      );
+    });
+
+    it("preserves non-behavioral display categories", () => {
+      assert.equal(
+        getDisplayCategoryTag({
+          category: "fact",
+          scope: "global",
+          metadata: "{}",
+        }),
+        "fact:global"
+      );
+    });
+  });
+
+  describe("transient retry classifier", () => {
+    it("classifies unexpected EOF as transient upstream error", () => {
+      const isTransient = isTransientBehavioralGuidanceUpstreamError(new Error("unexpected EOF while reading upstream response"));
+      assert.equal(isTransient, true);
+    });
+
+    it("classifies auth/billing/model/context/session/refusal errors as non-retry", () => {
+      assert.equal(isBehavioralGuidanceNonRetryError(new Error("401 unauthorized: invalid api key")), true);
+      assert.equal(isBehavioralGuidanceNonRetryError(new Error("insufficient credits for this request")), true);
+      assert.equal(isBehavioralGuidanceNonRetryError(new Error("model not found: gpt-x")), true);
+      assert.equal(isBehavioralGuidanceNonRetryError(new Error("context length exceeded")), true);
+      assert.equal(isBehavioralGuidanceNonRetryError(new Error("session expired, please re-authenticate")), true);
+      assert.equal(isBehavioralGuidanceNonRetryError(new Error("refusal due to safety policy")), true);
+    });
+
+    it("allows retry only in behavioral-guidance scope with zero useful output and retryCount=0", () => {
+      const allowed = classifyBehavioralGuidanceRetry({
+        inBehavioralGuidanceScope: true,
+        retryCount: 0,
+        usefulOutputChars: 0,
+        error: new Error("upstream temporarily unavailable (503)"),
+      });
+      assert.equal(allowed.retryable, true);
+      assert.equal(allowed.reason, "transient_upstream_failure");
+
+      const notScope = classifyBehavioralGuidanceRetry({
+        inBehavioralGuidanceScope: false,
+        retryCount: 0,
+        usefulOutputChars: 0,
+        error: new Error("unexpected EOF"),
+      });
+      assert.equal(notScope.retryable, false);
+      assert.equal(notScope.reason, "not_behavioral_guidance_scope");
+
+      const hadOutput = classifyBehavioralGuidanceRetry({
+        inBehavioralGuidanceScope: true,
+        retryCount: 0,
+        usefulOutputChars: 12,
+        error: new Error("unexpected EOF"),
+      });
+      assert.equal(hadOutput.retryable, false);
+      assert.equal(hadOutput.reason, "useful_output_present");
+
+      const retryUsed = classifyBehavioralGuidanceRetry({
+        inBehavioralGuidanceScope: true,
+        retryCount: 1,
+        usefulOutputChars: 0,
+        error: new Error("unexpected EOF"),
+      });
+      assert.equal(retryUsed.retryable, false);
+      assert.equal(retryUsed.reason, "retry_already_used");
+    });
+
+    it("computes jitter delay in the required 1-3s range", () => {
+      assert.equal(computeBehavioralGuidanceRetryDelayMs(() => 0), 1000);
+      assert.equal(computeBehavioralGuidanceRetryDelayMs(() => 0.5), 2000);
+      assert.equal(computeBehavioralGuidanceRetryDelayMs(() => 1), 3000);
+    });
+  });
+
+  describe("runWithBehavioralGuidanceTransientRetryOnce", () => {
+    it("retries once and succeeds for transient failures", async () => {
+      let attempts = 0;
+      const sleeps = [];
+      const logs = [];
+      const retryState = { count: 0 };
+
+      const result = await runWithBehavioralGuidanceTransientRetryOnce({
+        scope: "behavioral-guidance",
+        runner: "direct",
+        retryState,
+        execute: async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("unexpected EOF from provider");
+          }
+          return "ok";
+        },
+        random: () => 0,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        onLog: (level, message) => logs.push({ level, message }),
+      });
+
+      assert.equal(result, "ok");
+      assert.equal(attempts, 2);
+      assert.equal(retryState.count, 1);
+      assert.deepEqual(sleeps, [1000]);
+      assert.equal(logs.length, 2);
+      assert.match(logs[0].message, /transient upstream failure detected/i);
+      assert.match(logs[0].message, /retrying once in 1000ms/i);
+      assert.match(logs[1].message, /retry succeeded/i);
+    });
+
+    it("does not retry non-transient failures", async () => {
+      let attempts = 0;
+      const retryState = { count: 0 };
+
+      await assert.rejects(
+        runWithBehavioralGuidanceTransientRetryOnce({
+          scope: "behavioral-guidance",
+          runner: "cli",
+          retryState,
+          execute: async () => {
+            attempts += 1;
+            throw new Error("invalid api key");
+          },
+          sleep: async () => { },
+        }),
+        /invalid api key/i
+      );
+
+      assert.equal(attempts, 1);
+      assert.equal(retryState.count, 0);
+    });
+
+    it("does not loop: exhausted after one retry", async () => {
+      let attempts = 0;
+      const logs = [];
+      const retryState = { count: 0 };
+
+      await assert.rejects(
+        runWithBehavioralGuidanceTransientRetryOnce({
+          scope: "distiller",
+          runner: "cli",
+          retryState,
+          execute: async () => {
+            attempts += 1;
+            throw new Error("service unavailable 503");
+          },
+          random: () => 0.1,
+          sleep: async () => { },
+          onLog: (level, message) => logs.push({ level, message }),
+        }),
+        /service unavailable/i
+      );
+
+      assert.equal(attempts, 2);
+      assert.equal(retryState.count, 1);
+      assert.equal(logs.length, 2);
+      assert.match(logs[1].message, /retry exhausted/i);
+    });
+  });
+
+  describe("dynamic recall session state hygiene", () => {
+    it("clears per-session state so repeated-injection guard resets after session_end cleanup", async () => {
+      const state = createDynamicRecallSessionState({ maxSessions: 16 });
+      const run = () => orchestrateDynamicRecall({
+        channelName: "unit-dynamic-recall",
+        prompt: "Need targeted recall",
+        minPromptLength: 1,
+        minRepeated: 2,
+        topK: 1,
+        sessionId: "session-a",
+        state,
+        outputTag: "relevant-memories",
+        headerLines: [],
+        loadCandidates: async () => [{ id: "rule-a", text: "Always verify post-checks.", score: 0.9 }],
+        formatLine: (candidate) => candidate.text,
+      });
+
+      const first = await run();
+      assert.ok(first);
+
+      const second = await run();
+      assert.equal(second, undefined);
+
+      clearDynamicRecallSessionState(state, "session-a");
+
+      const third = await run();
+      assert.ok(third);
+    });
+
+    it("bounds tracked sessions by maxSessions to avoid unbounded growth", async () => {
+      const state = createDynamicRecallSessionState({ maxSessions: 2 });
+      const run = (sessionId) => orchestrateDynamicRecall({
+        channelName: "unit-dynamic-recall",
+        prompt: "Need targeted recall",
+        minPromptLength: 1,
+        minRepeated: 0,
+        topK: 1,
+        sessionId,
+        state,
+        outputTag: "relevant-memories",
+        headerLines: [],
+        loadCandidates: async () => [{ id: "rule-a", text: "Keep DNS checks in post-flight.", score: 0.9 }],
+        formatLine: (candidate) => candidate.text,
+      });
+
+      await run("session-a");
+      await run("session-b");
+      await run("session-c");
+
+      assert.equal(state.turnCounterBySession.size, 2);
+      assert.equal(state.historyBySession.size, 2);
+      assert.equal(state.updatedAtBySession.size, 2);
+      assert.equal(state.turnCounterBySession.has("session-a"), false);
+      assert.equal(state.historyBySession.has("session-a"), false);
+      assert.equal(state.updatedAtBySession.has("session-a"), false);
+    });
+  });
+
+  describe("sessionStrategy cutover contract", () => {
+    it("rejects removed sessionMemory fields", () => {
+      assert.throws(
+        () =>
+          parsePluginConfig({
+            ...baseConfig(),
+            sessionMemory: { enabled: true },
+          }),
+        /sessionMemory is no longer supported in 1\.0\.0-beta\.0/
+      );
+    });
+
+    it("defaults to systemSessionMemory when neither field is set", () => {
+      const parsed = parsePluginConfig(baseConfig());
+      assert.equal(parsed.sessionStrategy, "systemSessionMemory");
+    });
+
+    it("defaults auto-recall category allowlist to include other while keeping behavioral guidance excluded", () => {
+      const parsed = parsePluginConfig(baseConfig());
+      assert.deepEqual(parsed.autoRecallCategories, ["preference", "fact", "decision", "entity", "other"]);
+      assert.equal(parsed.autoRecallExcludeBehavioral, true);
+    });
+
+    it("defaults behavioral autoRecall mode to fixed", () => {
+      const parsed = parsePluginConfig({
+        ...baseConfig(),
+        sessionStrategy: "autoRecall",
+      });
+      assert.equal(parsed.autoRecallBehavioral.recall.mode, "fixed");
+      assert.equal(parsed.autoRecallBehavioral.recall.topK, 6);
+    });
+
+    it("parses dynamic behavioral autoRecall config fields", () => {
+      const parsed = parsePluginConfig({
+        ...baseConfig(),
+        autoRecallBehavioral: {
+          recall: {
+            mode: "dynamic",
+            topK: 9,
+            includeKinds: ["durable", "adaptive"],
+            maxAgeDays: 14,
+            maxEntriesPerKey: 7,
+            minRepeated: 3,
+            minScore: 0.22,
+            minPromptLength: 12,
+          },
+        },
+      });
+      assert.equal(parsed.autoRecallBehavioral.recall.mode, "dynamic");
+      assert.equal(parsed.autoRecallBehavioral.recall.topK, 9);
+      assert.deepEqual(parsed.autoRecallBehavioral.recall.includeKinds, ["durable", "adaptive"]);
+      assert.equal(parsed.autoRecallBehavioral.recall.maxAgeDays, 14);
+      assert.equal(parsed.autoRecallBehavioral.recall.maxEntriesPerKey, 7);
+      assert.equal(parsed.autoRecallBehavioral.recall.minRepeated, 3);
+      assert.equal(parsed.autoRecallBehavioral.recall.minScore, 0.22);
+      assert.equal(parsed.autoRecallBehavioral.recall.minPromptLength, 12);
+    });
+  });
+
+  describe("context split orchestration modules", () => {
+    it("renders tagged and error-detected prompt blocks", () => {
+      const tagged = renderTaggedPromptBlock({
+        tag: "relevant-memories",
+        headerLines: [],
+        contentLines: ["- [fact:global] keep it concise"],
+        wrapUntrustedData: true,
+      });
+      assert.match(tagged, /<relevant-memories>/);
+      assert.match(tagged, /UNTRUSTED DATA/);
+      assert.match(tagged, /END UNTRUSTED DATA/);
+
+      const errorBlock = renderErrorDetectedBlock([
+        { toolName: "bash", summary: "permission denied" },
+      ]);
+      assert.match(errorBlock, /<error-detected>/);
+      assert.match(errorBlock, /\[bash\] permission denied/);
+    });
+
+    it("tracks pending behavioral error signals with dedupe and one-shot prompt exposure", () => {
+      const state = createSessionExposureState();
+      const sessionKey = "agent:main:session:test";
+      const signal = {
+        at: 1,
+        toolName: "bash",
+        summary: "permission denied",
+        source: "tool_error",
+        signature: "permission denied",
+        signatureHash: "deadbeef",
+      };
+
+      state.addBehavioralGuidanceErrorSignal(sessionKey, signal, true);
+      state.addBehavioralGuidanceErrorSignal(sessionKey, signal, true);
+      const first = state.getPendingBehavioralGuidanceErrorSignalsForPrompt(sessionKey, 5);
+      const second = state.getPendingBehavioralGuidanceErrorSignalsForPrompt(sessionKey, 5);
+      assert.equal(first.length, 1);
+      assert.equal(second.length, 0);
+    });
+
+    it("plans generic auto-recall via dedicated planner module", async () => {
+      const state = createSessionExposureState();
+      const recallCalls = [];
+      const now = Date.now();
+      const planner = createAutoRecallPlanner(
+        {
+          enabled: true,
+          minPromptLength: 1,
+          topK: 2,
+          selectionMode: "mmr",
+          categories: ["fact", "behavioral"],
+          excludeBehavioral: true,
+          maxEntriesPerKey: 5,
+          maxAgeDays: 30,
+        },
+        {
+          state: state.autoRecallState,
+          recallGeneric: async (params) => {
+            recallCalls.push(params);
+            assert.deepEqual(params.categories, ["fact", "behavioral"]);
+            assert.equal(params.excludeBehavioral, true);
+            assert.equal(params.maxAgeDays, 30);
+            assert.equal(params.maxEntriesPerKey, 5);
+            return [
+              {
+                id: "fact-1",
+                text: "Always run post-checks after service changes.",
+                category: "fact",
+                scope: "global",
+                score: 0.91,
+                metadata: {
+                  createdAt: now - 1000,
+                  updatedAt: now,
+                },
+              },
+              {
+                id: "fact-2",
+                text: "Backend-side filtered recall already excluded behavioral rows.",
+                category: "fact",
+                scope: "global",
+                score: 0.89,
+                metadata: {
+                  createdAt: now - 1000,
+                  updatedAt: now,
+                },
+              },
+            ];
+          },
+          sanitizeForContext: (text) => text,
+        }
+      );
+
+      const output = await planner.plan({
+        prompt: "recall prior rollout guidance",
+        agentId: "main",
+        sessionId: "session-1",
+      });
+
+      assert.equal(recallCalls.length, 1);
+      assert.equal(recallCalls[0].agentId, "main");
+      assert.equal(recallCalls[0].sessionId, "session-1");
+      assert.ok(output);
+      assert.match(output.prependContext, /<relevant-memories>/);
+      assert.match(output.prependContext, /Always run post-checks/);
+      assert.match(output.prependContext, /Backend-side filtered recall already excluded behavioral rows/);
+    });
+
+    it("rejects missing remote recall dependency for generic auto-recall planner", () => {
+      const state = createSessionExposureState();
+      assert.throws(
+        () =>
+          createAutoRecallPlanner(
+            {
+              enabled: true,
+              topK: 2,
+              selectionMode: "mmr",
+            },
+            {
+              state: state.autoRecallState,
+              sanitizeForContext: (text) => text,
+            }
+          ),
+        /requires remote recallGeneric dependency/
+      );
+    });
+
+    it("plans behavioral guidance and error reminders via dedicated planner module", async () => {
+      const sessionState = createSessionExposureState();
+      const recallCalls = [];
+      const planner = createAutoRecallBehavioralPlanner(
+        {
+          enabled: true,
+          injectMode: "durable+adaptive",
+          dedupeErrorSignals: true,
+          errorReminderMaxEntries: 3,
+          errorScanMaxChars: 8000,
+          recall: {
+            mode: "fixed",
+            topK: 4,
+            includeKinds: ["durable"],
+            maxAgeDays: 45,
+            maxEntriesPerKey: 10,
+            minRepeated: 2,
+            minScore: 0.18,
+            minPromptLength: 8,
+          },
+        },
+        {
+          sessionState,
+          recallBehavioral: async (params) => {
+            recallCalls.push(params);
+            return [{
+              id: "invariant-1",
+              text: "Always verify scope and post-check results before concluding.",
+              kind: "invariant",
+              scope: "global",
+              score: 0.86,
+              metadata: {
+                timestamp: Date.now(),
+              },
+            }];
+          },
+          sanitizeForContext: (text) => text,
+        }
+      );
+
+      const sessionKey = "agent:main:session:planner-test";
+      planner.captureAfterToolCall({ toolName: "bash", error: "permission denied while writing file" }, sessionKey);
+
+      const first = await planner.buildBeforePromptPrependContext({
+        prompt: "continue with rollout",
+        agentId: "main",
+        sessionId: "planner-test",
+        sessionKey,
+      });
+      assert.ok(first);
+      assert.match(first, /<behavioral-guidance>/);
+      assert.match(first, /Always verify scope and post-check results before concluding\./);
+      assert.match(first, /<error-detected>/);
+      assert.equal(recallCalls.length, 1);
+      assert.deepEqual(recallCalls[0].includeKinds, ["durable"]);
+
+      const second = await planner.buildBeforePromptPrependContext({
+        prompt: "continue with rollout",
+        agentId: "main",
+        sessionId: "planner-test",
+        sessionKey,
+      });
+      assert.ok(second);
+      assert.match(second, /<behavioral-guidance>/);
+      assert.doesNotMatch(second, /<error-detected>/);
+    });
+
+    it("rejects missing remote recall dependency for behavioral planner", () => {
+      const sessionState = createSessionExposureState();
+      assert.throws(
+        () =>
+          createAutoRecallBehavioralPlanner(
+            {
+              enabled: true,
+              injectMode: "durable-only",
+              dedupeErrorSignals: true,
+              errorReminderMaxEntries: 3,
+              errorScanMaxChars: 8000,
+              recall: {
+                mode: "fixed",
+                topK: 3,
+                includeKinds: ["durable"],
+                maxAgeDays: 45,
+                maxEntriesPerKey: 10,
+                minRepeated: 1,
+                minScore: 0.18,
+                minPromptLength: 8,
+              },
+            },
+            {
+              sessionState,
+              sanitizeForContext: (text) => text,
+            }
+          ),
+        /requires remote recallBehavioral dependency/
+      );
+    });
+
+    it("passes dynamic behavioral candidate filters to backend recall", async () => {
+      const sessionState = createSessionExposureState();
+      const recallCalls = [];
+      const planner = createAutoRecallBehavioralPlanner(
+        {
+          enabled: true,
+          injectMode: "durable+adaptive",
+          dedupeErrorSignals: true,
+          errorReminderMaxEntries: 2,
+          errorScanMaxChars: 8000,
+          recall: {
+            mode: "dynamic",
+            topK: 2,
+            includeKinds: ["durable", "adaptive"],
+            maxAgeDays: 45,
+            maxEntriesPerKey: 10,
+            minRepeated: 1,
+            minScore: 0.4,
+            minPromptLength: 1,
+          },
+        },
+        {
+          sessionState,
+          recallBehavioral: async (params) => {
+            recallCalls.push(params);
+            return [
+              {
+                id: "derived-1",
+                text: "Escalate to a rollback checklist when service health is uncertain.",
+                kind: "derived",
+                scope: "global",
+                score: 0.67,
+                metadata: {
+                  timestamp: Date.now(),
+                },
+              },
+            ];
+          },
+          sanitizeForContext: (text) => text,
+        }
+      );
+
+      const output = await planner.buildBeforePromptPrependContext({
+        prompt: "What should I watch during the rollout?",
+        agentId: "main",
+        sessionId: "planner-dynamic",
+        sessionKey: "agent:main:session:planner-dynamic",
+      });
+
+      assert.ok(output);
+      assert.equal(recallCalls.length, 1);
+      assert.equal(recallCalls[0].limit, 2);
+      assert.deepEqual(recallCalls[0].includeKinds, ["durable", "adaptive"]);
+      assert.equal(recallCalls[0].minScore, 0.4);
+    });
+
+    it("uses one shared session-clear contract for behavioral guidance errors and dynamic recall state", () => {
+      const clearedBehavioralErrors = [];
+      const clearedDynamicContext = [];
+      const planner = createAutoRecallBehavioralPlanner(
+        {
+          enabled: true,
+          injectMode: "durable-only",
+          dedupeErrorSignals: true,
+          errorReminderMaxEntries: 3,
+          errorScanMaxChars: 8000,
+          recall: {
+            mode: "fixed",
+            topK: 3,
+            includeKinds: ["durable"],
+            maxAgeDays: 45,
+            maxEntriesPerKey: 10,
+            minRepeated: 1,
+            minScore: 0.18,
+            minPromptLength: 8,
+          },
+        },
+        {
+          sessionState: {
+            autoRecallState: {},
+            behavioralRecallState: {},
+            clearDynamicRecallForContext: (ctx) => {
+              clearedDynamicContext.push(ctx);
+            },
+            addBehavioralGuidanceErrorSignal() { },
+            getPendingBehavioralGuidanceErrorSignalsForPrompt() {
+              return [];
+            },
+            getRecentBehavioralGuidanceErrorSignals() {
+              return [];
+            },
+            clearBehavioralGuidanceErrorSignalsForSession(sessionKey) {
+              clearedBehavioralErrors.push(sessionKey);
+            },
+            pruneBehavioralGuidanceSessionState() { },
+          },
+          recallBehavioral: async () => [],
+          sanitizeForContext: (text) => text,
+        }
+      );
+
+      planner.clearSession({
+        sessionKey: "agent:main:session:planner-reset",
+        sessionId: "planner-reset-runtime",
+      });
+
+      assert.deepEqual(clearedBehavioralErrors, ["agent:main:session:planner-reset"]);
+      assert.deepEqual(clearedDynamicContext, [
+        {
+          sessionKey: "agent:main:session:planner-reset",
+          sessionId: "planner-reset-runtime",
+        },
+      ]);
+    });
+  });
+});
