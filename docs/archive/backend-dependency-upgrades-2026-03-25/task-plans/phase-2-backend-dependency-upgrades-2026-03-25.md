@@ -28,14 +28,29 @@ Goal: Upgrade `clap`, `http`, and `lancedb` with bounded fallout.
 Definition of Done: All phase tasks are implemented, tested, and evidenced with commands and outputs.
 
 Tasks:
-- [ ] T021 [Backend] Upgrade `clap` and resolve CLI/config entrypoint fallout.
+- [x] T021 [Backend] Upgrade `clap` and resolve CLI/config entrypoint fallout.
   - DoD: backend CLI still builds and accepts the current `--config` usage.
-- [ ] T022 [Backend] Upgrade `http` and resolve request/response helper fallout.
+- [x] T022 [Backend] Upgrade `http` and resolve request/response helper fallout.
   - DoD: router handlers and test request builders compile cleanly.
-- [ ] T023 [Backend] Upgrade `lancedb` and resolve storage/index/query fallout short of Arrow major upgrades.
+- [x] T023 [Backend] Upgrade `lancedb` and resolve storage/index/query fallout short of Arrow major upgrades.
   - DoD: storage paths and `contract_semantics` stay green without schema regressions.
 
 Checkpoint: Phase 2 artifacts are merged, verified, and recorded in 4phases-checklist.md before next phase starts.
+
+## Execution Record
+- Batch date: 2026-03-25
+- Result:
+  - `clap` manifest constraint tightened to `4.6.0`, matching the already-resolved lockfile version.
+  - `http` manifest constraint tightened to `1.4.0`, matching the already-resolved lockfile version.
+  - `lancedb` upgraded from `0.26.2` to `0.27.1`, pulling the corresponding Lance/DataFusion patchline.
+- Fallout handled:
+  - `lancedb` 0.27.1 no longer accepts raw `RecordBatchIterator` in `Table::add`.
+  - Backend insert path and legacy-schema test helper were updated to pass `Box<dyn RecordBatchReader + Send>` instead.
+- Evidence commands:
+  - `cargo update --manifest-path backend/Cargo.toml -p lancedb -p clap -p http`
+  - `cargo clippy --manifest-path backend/Cargo.toml --all-targets --all-features -- -D warnings`
+  - `cargo test --manifest-path backend/Cargo.toml --test contract_semantics -- --nocapture`
+  - `npm test`
 
 ## Dependencies & Execution Order
 - Phase 1 blocks all others.

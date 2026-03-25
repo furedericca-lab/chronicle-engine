@@ -18,7 +18,7 @@ use crate::{
 };
 use arrow_array::{
     types::Float32Type, Array, ArrayRef, FixedSizeListArray, Float32Array, Float64Array,
-    Int64Array, RecordBatch, RecordBatchIterator, StringArray,
+    Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use futures::TryStreamExt;
@@ -2462,10 +2462,10 @@ impl LanceMemoryRepo {
         }
         let batch = rows_to_record_batch(rows, self.vector_dimensions)?;
         let schema = batch.schema();
-        let reader = RecordBatchIterator::new(
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             vec![Ok::<RecordBatch, ArrowError>(batch)].into_iter(),
             schema,
-        );
+        ));
         table
             .add(reader)
             .execute()

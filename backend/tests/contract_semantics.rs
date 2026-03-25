@@ -1,4 +1,6 @@
-use arrow_array::{Float64Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray};
+use arrow_array::{
+    Float64Array, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
+};
 use arrow_schema::{DataType, Field, Schema};
 use axum::{
     body::{to_bytes, Body},
@@ -409,7 +411,8 @@ async fn seed_legacy_table_without_vector(tmp: &Path, rows: &[(&str, &str, &str,
         .execute()
         .await
         .expect("legacy table should open");
-    let reader = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+    let reader: Box<dyn RecordBatchReader + Send> =
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema));
     table
         .add(reader)
         .execute()

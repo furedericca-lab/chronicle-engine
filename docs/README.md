@@ -5,12 +5,12 @@ This directory keeps the current operator/runtime references and two intentional
 Current documents:
 
 - `runtime-architecture.md`: canonical runtime split and source-of-truth boundaries.
-- `backend-dependency-upgrades-2026-03-25/`: active phased scope for backend dependency upgrades. Phase 1 records the no-op audit for the safe semver-compatible set; phases 2-4 cover the riskier crate groups.
 
 Historical and superseded material:
 
 - `archive/`: completed plans, architecture transition docs, closeout contracts, and stale operator notes preserved for reference.
 - `archive-index.md`: top-level archive map for the preserved historical scopes.
+- `archive/backend-dependency-upgrades-2026-03-25/`: archived phased dependency-upgrade scope for moving the backend onto newer `lancedb`, `axum`, `rusqlite`, and `toml` lines while explicitly closing on single-compatible `reqwest` and `arrow-*` versions instead of keeping a split dependency graph.
 - `archive/backend-release-line-closeout-2026-03-25/`: archived phased release-line scope for fixing backend Clippy/reliability blockers, splitting the backend contract suite into the `contract_semantics` multi-file test target, and recording the verification gate for release-quality hygiene.
 - `archive/storage-reflection-field-cleanup-2026-03-25/`: archived single-contract scope for cutting over LanceDB storage internals from legacy reflection-era names to behavioral-facing names and rejecting unsupported legacy schemas instead of auto-migrating them.
 - `archive/snapshot-refresh-2026-03-25/`: archived single-contract scope for refreshing the retained top-level architecture snapshots to the 2026-03-25 naming and runtime boundary.

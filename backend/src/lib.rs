@@ -61,7 +61,7 @@ pub fn build_app(config: AppConfig) -> anyhow::Result<Router> {
         .route("/v1/memories/list", post(list_memories))
         .route("/v1/memories/stats", post(memory_stats))
         .route("/v1/distill/jobs", post(enqueue_distill_job))
-        .route("/v1/distill/jobs/:job_id", get(get_distill_job_status))
+        .route("/v1/distill/jobs/{job_id}", get(get_distill_job_status))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
