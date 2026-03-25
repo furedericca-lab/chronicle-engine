@@ -27,17 +27,17 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
- && groupadd --system --gid 10001 memorybackend \
- && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin memorybackend \
- && mkdir -p /etc/memory-lancedb-pro-backend \
- && mkdir -p /var/lib/memory-lancedb-pro-backend/lancedb \
- && mkdir -p /var/lib/memory-lancedb-pro-backend/sqlite \
- && chown -R memorybackend:memorybackend /etc/memory-lancedb-pro-backend /var/lib/memory-lancedb-pro-backend
+ && groupadd --system --gid 10001 chroniclebackend \
+ && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin chroniclebackend \
+ && mkdir -p /etc/chronicle-engine-backend \
+ && mkdir -p /var/lib/chronicle-engine-backend/lancedb \
+ && mkdir -p /var/lib/chronicle-engine-backend/sqlite \
+ && chown -R chroniclebackend:chroniclebackend /etc/chronicle-engine-backend /var/lib/chronicle-engine-backend
 
 COPY --from=build /work/backend/target/release/memory-lancedb-pro-backend /usr/local/bin/memory-lancedb-pro-backend
 
-USER memorybackend:memorybackend
+USER chroniclebackend:chroniclebackend
 
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/memory-lancedb-pro-backend", "--config", "/etc/memory-lancedb-pro-backend/backend.toml"]
+ENTRYPOINT ["/usr/local/bin/memory-lancedb-pro-backend", "--config", "/etc/chronicle-engine-backend/backend.toml"]

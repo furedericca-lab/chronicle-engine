@@ -1,4 +1,4 @@
-# Example deployment config for memory-lancedb-pro-backend.
+# Example deployment config for Chronicle Engine backend containers.
 # This file documents the current deployment shape for the Rust backend service.
 # Keep keys aligned with backend/src/config.rs.
 
@@ -6,8 +6,8 @@
 bind = "0.0.0.0:8080"
 
 [storage]
-lancedb_path = "/var/lib/memory-lancedb-pro-backend/lancedb"
-sqlite_path = "/var/lib/memory-lancedb-pro-backend/sqlite/jobs.db"
+lancedb_path = "/var/lib/chronicle-engine-backend/lancedb"
+sqlite_path = "/var/lib/chronicle-engine-backend/sqlite/jobs.db"
 
 [auth.runtime]
 token = "replace-with-runtime-bearer-token"

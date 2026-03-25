@@ -1,16 +1,16 @@
-name: memory-lancedb-pro-backend
+name: chronicle-engine-backend
 
 services:
-  memory-lancedb-pro-backend:
-    image: ghcr.io/${GHCR_OWNER:-win4r}/memory-lancedb-pro-backend:${BACKEND_IMAGE_TAG:-latest}
-    container_name: memory-lancedb-pro-backend
+  chronicle-engine-backend:
+    image: ghcr.io/${GHCR_OWNER:-furedericca-lab}/chronicle-engine-backend:${BACKEND_IMAGE_TAG:-latest}
+    container_name: chronicle-engine-backend
     restart: unless-stopped
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
     volumes:
-      - ./backend.toml:/etc/memory-lancedb-pro-backend/backend.toml:ro
-      - ../data/memory-lancedb-pro-backend/lancedb:/var/lib/memory-lancedb-pro-backend/lancedb
-      - ../data/memory-lancedb-pro-backend/sqlite:/var/lib/memory-lancedb-pro-backend/sqlite
+      - ./backend.toml:/etc/chronicle-engine-backend/backend.toml:ro
+      - ../data/chronicle-engine-backend/lancedb:/var/lib/chronicle-engine-backend/lancedb
+      - ../data/chronicle-engine-backend/sqlite:/var/lib/chronicle-engine-backend/sqlite
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/v1/health"]
       interval: 15s

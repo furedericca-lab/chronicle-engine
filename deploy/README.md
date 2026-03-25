@@ -1,6 +1,6 @@
-# memory-lancedb-pro-backend Deployment
+# Chronicle Engine Backend Deployment
 
-This folder contains the Docker deployment scaffold for the current Rust backend service `memory-lancedb-pro-backend`.
+This folder contains the Docker deployment scaffold for the current Rust backend service used by Chronicle Engine.
 
 ## Intended runtime shape
 
@@ -12,8 +12,8 @@ This folder contains the Docker deployment scaffold for the current Rust backend
 
 ## Files
 
-- `Dockerfile`: multi-stage Rust build for the `memory-lancedb-pro-backend` binary.
-- `docker-compose.yml`: single-instance deployment using a published GHCR image.
+- `Dockerfile`: multi-stage Rust build for the backend binary.
+- `docker-compose.yml`: single-instance deployment using the published `chronicle-engine-backend` GHCR image.
 - `backend.toml.example`: example static config file for container deployments.
 
 ## Rust source layout
@@ -27,7 +27,7 @@ backend/
   src/main.rs
 ```
 
-The crate must build the binary:
+The crate currently builds the binary:
 
 ```text
 memory-lancedb-pro-backend
@@ -38,9 +38,9 @@ memory-lancedb-pro-backend
 From the repository root:
 
 ```bash
-docker build \
+  docker build \
   -f deploy/Dockerfile \
-  -t memory-lancedb-pro-backend:local \
+  -t chronicle-engine-backend:local \
   .
 ```
 
@@ -51,8 +51,8 @@ Prepare the runtime config:
 ```bash
 cp deploy/backend.toml.example \
   deploy/backend.toml
-mkdir -p data/memory-lancedb-pro-backend/lancedb
-mkdir -p data/memory-lancedb-pro-backend/sqlite
+mkdir -p data/chronicle-engine-backend/lancedb
+mkdir -p data/chronicle-engine-backend/sqlite
 chmod 600 deploy/backend.toml
 ```
 
@@ -86,7 +86,7 @@ The workflow at `.github/workflows/docker-backend.yml` assumes:
 - the crate builds a release binary named `memory-lancedb-pro-backend`;
 - GitHub Container Registry is available for the repository;
 - the repository `GITHUB_TOKEN` has `packages: write` permission;
-- the image name is `ghcr.io/<owner>/memory-lancedb-pro-backend`.
+- the image name is `ghcr.io/<owner>/chronicle-engine-backend`.
 
 The workflow assumes the checked-in backend crate remains present and buildable.
 
