@@ -5,7 +5,6 @@ This directory keeps the current operator/runtime references and two intentional
 Current documents:
 
 - `backend-admin-plane-2026-03-27/`: active phased scope for adding a bundled admin plane under `/admin` and `/admin/api/*`, wiring live admin auth/logging, and tightening duplicated recall flow while preserving the Rust backend as sole authority.
-- `backend-binary-rename-chronicle-engine-rs-2026-03-26/`: active single-contract scope for renaming the Rust backend crate and binary surface to `chronicle-engine-rs` while keeping deploy image naming stable.
 - `runtime-architecture.md`: canonical runtime split and source-of-truth boundaries.
 
 Historical and superseded material:
@@ -13,6 +12,7 @@ Historical and superseded material:
 - `archive/`: completed plans, architecture transition docs, closeout contracts, and stale operator notes preserved for reference.
 - `archive-index.md`: top-level archive map for the preserved historical scopes.
 - `archive/ghcr-version-retention-2026-03-27/`: archived phased scope for adding workflow-enforced GHCR cleanup so `chronicle-engine-backend` keeps only the newest 10 package versions after successful non-PR publishes.
+- `archive/backend-binary-rename-chronicle-engine-rs-2026-03-26/`: archived single-contract scope for renaming the Rust backend crate/lib/bin surface to `chronicle-engine-rs` / `chronicle_engine_rs` while intentionally keeping deploy image naming stable.
 - `archive/backend-dependency-upgrades-2026-03-25/`: archived phased dependency-upgrade scope for moving the backend onto newer `lancedb`, `axum`, `rusqlite`, and `toml` lines while explicitly closing on single-compatible `reqwest` and `arrow-*` versions instead of keeping a split dependency graph.
 - `archive/backend-release-line-closeout-2026-03-25/`: archived phased release-line scope for fixing backend Clippy/reliability blockers, splitting the backend contract suite into the `contract_semantics` multi-file test target, and recording the verification gate for release-quality hygiene.
 - `archive/storage-reflection-field-cleanup-2026-03-25/`: archived single-contract scope for cutting over LanceDB storage internals from legacy reflection-era names to behavioral-facing names and rejecting unsupported legacy schemas instead of auto-migrating them.
