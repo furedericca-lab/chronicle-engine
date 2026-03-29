@@ -64,22 +64,22 @@ The admin plane is explicitly not a second authority. It is a new operations sur
 
 ### Frontend modules
 
-- `admin-web/src/routes/*`
+- `backend/web/src/routes/*`
   - route layout and page entrypoints
-- `admin-web/src/features/memories/*`
-- `admin-web/src/features/recall/*`
-- `admin-web/src/features/distill/*`
-- `admin-web/src/features/transcripts/*`
-- `admin-web/src/features/governance/*`
-- `admin-web/src/lib/api/*`
+- `backend/web/src/features/memories/*`
+- `backend/web/src/features/recall/*`
+- `backend/web/src/features/distill/*`
+- `backend/web/src/features/transcripts/*`
+- `backend/web/src/features/governance/*`
+- `backend/web/src/lib/api/*`
   - typed admin API client
-- `admin-web/src/components/*`
+- `backend/web/src/components/*`
   - tables, drawers, filters, detail panes
   - confirmation and diff modals
 
 ### Deployment flow
 
-1. Build `admin-web/` into static assets.
+1. Build `backend/web/` into static assets.
 2. Copy those assets into the backend runtime image.
 3. Start the single `chronicle-engine-rs` process.
 4. Backend serves:
@@ -322,5 +322,6 @@ The admin plane is explicitly not a second authority. It is a new operations sur
 - Rust backend build with embedded/static asset path
 - Docker image build with combined Rust + frontend stages
 - Static asset fallback verification for `/admin` without intercepting `/admin/api/*`
-- Standalone `admin-web/package.json` and lockfile aligned with the repository's existing npm-based tooling rather than introducing a workspace manager in this scope
+- Standalone `backend/web/package.json` and lockfile aligned with the repository's existing npm-based tooling rather than introducing a workspace manager in this scope.
+
 - Recall Lab verification that confirms `access_count` / `last_accessed_at` are unchanged after simulation

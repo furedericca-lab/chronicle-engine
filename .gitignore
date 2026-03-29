@@ -1,1 +1,34 @@
+# Node.js
 node_modules/
+dist/
+dist-ssr/
+*.local
+
+# npm/yarn logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Rust
+backend/target/
+backend/cargo_out.log
+backend/cargo-check.log
+backend/check.err
+backend/test.log
+backend/test_output.log
+
+# System
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

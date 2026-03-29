@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod config;
 mod error;
 pub mod models;
@@ -28,7 +29,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Serialize;
+use serde_json::json;
 use std::future::Future;
 
 const AUTH_USER_ID_HEADER: &str = "x-auth-user-id";
@@ -41,36 +42,133 @@ struct RuntimeAuthContext {
 
 pub fn build_app(config: AppConfig) -> anyhow::Result<Router> {
     config.validate()?;
-    let state = AppState::new(config)?;
+    let state = AppState::new(config.clone())?;
 
     let data_routes = Router::new()
-        .route("/v1/recall/generic", post(recall_generic))
-        .route("/v1/recall/behavioral", post(recall_behavioral_guidance))
-        .route("/v1/debug/recall/generic", post(recall_generic_debug))
+        .route("/recall/generic", post(recall_generic))
+        .route("/recall/behavioral", post(recall_behavioral_guidance))
+        .route("/debug/recall/generic", post(recall_generic_debug))
         .route(
-            "/v1/debug/recall/behavioral",
+            "/debug/recall/behavioral",
             post(recall_behavioral_guidance_debug),
         )
-        .route("/v1/memories/store", post(store_memories))
+        .route("/memories/store", post(store_memories))
         .route(
-            "/v1/session-transcripts/append",
+            "/session-transcripts/append",
             post(append_session_transcript),
         )
-        .route("/v1/memories/update", post(update_memory))
-        .route("/v1/memories/delete", post(delete_memories))
-        .route("/v1/memories/list", post(list_memories))
-        .route("/v1/memories/stats", post(memory_stats))
-        .route("/v1/distill/jobs", post(enqueue_distill_job))
-        .route("/v1/distill/jobs/{job_id}", get(get_distill_job_status))
+        .route("/memories/update", post(update_memory))
+        .route("/memories/delete", post(delete_memories))
+        .route("/memories/list", post(list_memories))
+        .route("/memories/stats", post(memory_stats))
+        .route("/distill/jobs", post(enqueue_distill_job))
+        .route("/distill/jobs/{job_id}", get(get_distill_job_status))
+        .fallback(|| async { axum::http::StatusCode::NOT_FOUND })
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             runtime_auth_middleware,
         ));
 
+    // Admin-plane rate limiter: 120 requests per 60 seconds per IP+token.
+    let admin_rate_limiter = admin::rate_limit::AdminRateLimiter::new(120, 60);
+
+    // Admin SPA shell: serve static assets from admin_assets_path, fallback to index.html
+    let assets_path = config.server.admin_assets_path.clone();
+    let index_path = assets_path.join("index.html");
+
+    let serve_dir = tower_http::services::ServeDir::new(assets_path.clone());
+    let serve_index = tower_http::services::ServeFile::new(index_path);
+
+    let admin_api_routes = Router::new()
+        .route("/health", get(admin::routes::admin_health))
+        .route("/principals", get(admin::routes::list_principals))
+        .route(
+            "/principals/{principalId}/recall/simulate",
+            post(admin::routes::recall_simulate),
+        )
+        .route(
+            "/principals/{principalId}/memories",
+            get(admin::routes::list_memories).post(admin::routes::create_memory),
+        )
+        .route(
+            "/principals/{principalId}/memories/{memoryId}",
+            get(admin::routes::get_memory)
+                .patch(admin::routes::update_memory)
+                .delete(admin::routes::delete_memory),
+        )
+        .route(
+            "/principals/{principalId}/distill_jobs",
+            get(admin::routes::list_distill_jobs)
+        )
+        .route(
+            "/principals/{principalId}/distill_jobs/{jobId}",
+            get(admin::routes::get_distill_job)
+        )
+        .route(
+            "/principals/{principalId}/transcripts",
+            get(admin::routes::list_transcripts)
+        )
+        .route(
+            "/principals/{principalId}/transcripts/{transcriptId}",
+            get(admin::routes::get_transcript)
+        )
+        .route(
+            "/principals/{principalId}/governance",
+            get(admin::routes::list_governance_artifacts)
+        )
+        .route(
+            "/principals/{principalId}/governance/{artifactId}/review",
+            post(admin::routes::review_governance_artifact)
+        )
+        .route(
+            "/principals/{principalId}/governance/{artifactId}/promote",
+            post(admin::routes::promote_governance_artifact)
+        )
+        .route(
+            "/audit",
+            get(admin::routes::get_audit_log)
+        )
+        .route(
+            "/settings",
+            get(admin::routes::get_settings)
+                .post(admin::routes::update_settings)
+        )
+        .fallback(|| async { (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))) })
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            (
+                config.auth.admin.token.clone(),
+                config.auth.runtime.token.clone(),
+                admin_rate_limiter,
+            ),
+            admin::auth::admin_auth_middleware,
+        ));
+
+    let admin_spa = Router::new()
+        .nest_service("/assets", serve_dir)
+        .fallback_service(axum::routing::get_service(serve_index));
+
     Ok(Router::new()
         .route("/v1/health", get(health))
-        .merge(data_routes))
+        .nest("/v1", data_routes)
+        .nest("/admin/api", admin_api_routes)
+        .nest("/admin", admin_spa))
+}
+
+/// Initialize tracing/logging based on the logging.level config.
+/// Call this before building the app in main.rs.
+pub fn init_logging(level: &str) {
+    use std::str::FromStr;
+    let filter = tracing_subscriber::filter::LevelFilter::from_str(level)
+        .unwrap_or(tracing_subscriber::filter::LevelFilter::INFO);
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(filter)
+        .with_target(true)
+        .with_thread_ids(false)
+        .finish();
+    // Ignore error if a global subscriber is already set (e.g. in tests).
+    let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -154,9 +252,32 @@ async fn store_memories(
         "POST /v1/memories/store",
         &idempotency_key,
         &fingerprint_request(&req)?,
-        state.memory_repo.store(req),
+        state.memory_repo.store(req.clone()),
     )
     .await?;
+
+    let source_kind = match &req {
+        StoreRequest::ToolStore { .. } => "tool-store",
+        StoreRequest::AutoCapture { .. } => "auto-capture",
+    };
+
+    for res in &response.results {
+        let prov = crate::models::MemoryProvenance {
+            memory_id: res.id.clone(),
+            source_kind: source_kind.to_string(),
+            source_ref: None,
+            source_label: None,
+            source_detail_json: None,
+            job_id: None,
+            artifact_id: None,
+            created_at: Some(crate::state::now_millis()),
+        };
+        // Best effort sync; failures are logged but don't fail the data plane response.
+        if let Err(err) = state.job_store.save_memory_provenance(&prov) {
+            tracing::error!("failed to save memory provenance: {}", err);
+        }
+    }
+
     Ok(Json(response))
 }
 
@@ -198,9 +319,18 @@ async fn delete_memories(
         "POST /v1/memories/delete",
         &idempotency_key,
         &fingerprint_request(&req)?,
-        state.memory_repo.delete(req),
+        state.memory_repo.delete(req.clone()),
     )
     .await?;
+
+    if deleted > 0 {
+        if let Some(ref mid) = req.memory_id {
+            if let Err(err) = state.job_store.delete_memory_provenance(mid) {
+                tracing::error!("failed to delete memory provenance: {}", err);
+            }
+        }
+    }
+
     Ok(Json(crate::models::DeleteResponse { deleted }))
 }
 
@@ -319,7 +449,7 @@ fn require_request_id(headers: &HeaderMap) -> AppResult<()> {
     Ok(())
 }
 
-fn require_idempotency_key(headers: &HeaderMap) -> AppResult<&str> {
+pub(crate) fn require_idempotency_key(headers: &axum::http::HeaderMap) -> AppResult<&str> {
     required_header(headers, "idempotency-key")
 }
 
@@ -372,7 +502,7 @@ fn ensure_actor_matches_context(actor: &Actor, auth: &RuntimeAuthContext) -> App
     Ok(())
 }
 
-async fn run_idempotent_operation<T, F>(
+pub(crate) async fn run_idempotent_operation<T, F>(
     state: &AppState,
     principal: &Principal,
     operation: &str,
@@ -405,7 +535,7 @@ where
     }
 }
 
-fn fingerprint_request<T: Serialize>(request: &T) -> AppResult<String> {
+pub(crate) fn fingerprint_request<T: serde::Serialize>(request: &T) -> AppResult<String> {
     serde_json::to_string(request)
         .map_err(|err| AppError::internal(format!("failed to fingerprint request payload: {err}")))
 }

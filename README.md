@@ -83,7 +83,26 @@ In practical terms:
 | Can the plugin shape prompt injection locally? | Yes | Yes |
 | Is there a supported local fallback memory engine? | Historically yes | No |
 
-## 4. Request Flow
+## 4. Admin Plane
+
+Chronicle Engine includes a bundled **Admin Plane** for operators to manage memories, monitor distillation, and trace recall logic.
+
+- **URL**: Accessible at `/admin` on the backend host.
+- **Auth**: Protected by a dedicated `auth.admin.token` (bearer auth).
+- **Features**:
+  - **Dashboard**: Overview of active principals and their activity stats.
+  - **Memories**: Browse and manage memory rows for any principal.
+  - **Behavioral Guidance**: Inspect active behavioral rules.
+  - **Recall Lab**: Side-effect-free recall simulation with full debug traces.
+  - **Distill Jobs**: Monitor background knowledge distillation status and artifacts.
+  - **Transcripts**: View session transcripts for context analysis.
+  - **Governance**: Review and promote candidate memories derived from distillation.
+  - **Audit Log**: Track admin-plane mutations and configuration changes.
+  - **Settings**: Read-only (MVP) view of the active runtime configuration.
+
+The Admin UI is a React SPA bundled into the backend binary and served directly by the Rust service.
+
+## 5. Request Flow
 
 ### Generic recall
 
@@ -97,6 +116,17 @@ User prompt
             -> plugin receives authoritative rows
               -> local prompt block rendering
                 -> <relevant-memories> injected into prompt
+```
+
+### Admin Access
+
+```text
+Operator browser
+  -> GET /admin
+    -> backend serves SPA shell + assets
+      -> SPA requests /admin/api/* with admin bearer
+        -> backend validates admin token + rate limits
+          -> Operator manages memories / traces recall
 ```
 
 ### Cadence-driven distill flow

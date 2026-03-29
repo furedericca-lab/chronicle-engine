@@ -14,6 +14,7 @@ pub enum ErrorCode {
     InvalidRequest,
     NotFound,
     Conflict,
+    RateLimited,
     BackendUnavailable,
     UpstreamEmbeddingError,
     UpstreamRerankError,
@@ -30,6 +31,7 @@ impl ErrorCode {
             Self::InvalidRequest => "INVALID_REQUEST",
             Self::NotFound => "NOT_FOUND",
             Self::Conflict => "CONFLICT",
+            Self::RateLimited => "RATE_LIMITED",
             Self::BackendUnavailable => "BACKEND_UNAVAILABLE",
             Self::UpstreamEmbeddingError => "UPSTREAM_EMBEDDING_ERROR",
             Self::UpstreamRerankError => "UPSTREAM_RERANK_ERROR",
@@ -84,6 +86,15 @@ impl AppError {
             StatusCode::CONFLICT,
             ErrorCode::IdempotencyConflict,
             false,
+            message,
+        )
+    }
+
+    pub fn rate_limited(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            ErrorCode::RateLimited,
+            true,
             message,
         )
     }
@@ -156,9 +167,21 @@ impl AppError {
     }
 }
 
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code.as_str(), self.message)
+    }
+}
+
 impl From<anyhow::Error> for AppError {
     fn from(err: anyhow::Error) -> Self {
         Self::internal(err.to_string())
+    }
+}
+
+impl From<rusqlite::Error> for AppError {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::internal(format!("sqlite error: {err}"))
     }
 }
 

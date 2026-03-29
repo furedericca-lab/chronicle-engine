@@ -78,6 +78,19 @@ http://127.0.0.1:8080
 
 Use the runtime token from `backend.toml` for data-plane requests only.
 
+## Admin UI Access
+
+The backend provides a bundled Admin UI accessible at:
+
+```text
+http://127.0.0.1:8080/admin
+```
+
+To login:
+- Use the `auth.admin.token` configured in your `backend.toml`.
+- The token is sent in the `Authorization: Bearer <token>` header by the SPA.
+- Access is subject to rate limiting and audit logging.
+
 ## GitHub Actions image build requirements
 
 The workflow at `.github/workflows/docker-backend.yml` assumes:

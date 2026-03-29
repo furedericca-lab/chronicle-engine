@@ -28,13 +28,13 @@ Goal: Add the operator-facing admin APIs over memories, recall, distill jobs, tr
 Definition of Done: The backend exposes typed admin APIs sufficient to power the planned Memory Explorer, Recall Lab, Distill Job Center, Transcripts, and Governance pages.
 
 Tasks:
-- [ ] T041 [Backend] Add principal/memory admin APIs and provenance persistence.
+- [x] T041 [Backend] Add principal/memory admin APIs and provenance persistence.
   - DoD: principal listing, memory list/detail/create/update/delete APIs exist with principal-first DTOs, explicit provenance/source support, and companion provenance writes stay in sync for both runtime and admin mutations.
-- [ ] T042 [Backend] Add recall, distill, transcript, governance, and audit admin APIs.
+- [x] T042 [Backend] Add recall, distill, transcript, governance, and audit admin APIs.
   - DoD: no-side-effect `recall/simulate`, principal-scoped distill list/detail, principal-scoped transcript list/detail via opaque `transcriptId`, interactive governance review/promote APIs, settings config read/write APIs, and audit-log APIs exist.
-- [ ] T043 [Security] Preserve principal and behavioral-write invariants in admin mutations.
+- [x] T043 [Security] Preserve principal and behavioral-write invariants in admin mutations.
   - DoD: admin APIs still enforce backend-managed behavioral write restrictions, explicit principal selection, admin mutation idempotency, and do not require browser-supplied runtime-only actor/session fields.
-- [ ] T044 [QA] Add admin contract tests covering the new API families.
+- [x] T044 [QA] Add admin contract tests covering the new API families.
   - DoD: backend tests exercise list/detail/mutation and filtered browse flows for the admin plane.
 
 Checkpoint: Phase 3 artifacts are merged, verified, and recorded in 5phases-checklist.md before next phase starts.

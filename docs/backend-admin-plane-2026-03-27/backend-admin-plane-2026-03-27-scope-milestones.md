@@ -7,7 +7,7 @@ description: Scope boundaries and milestones for the bundled admin plane and bac
 ## In Scope
 
 - Admin-plane architecture and implementation docs.
-- React + TypeScript single-page admin UI under `admin-web/`.
+- React + TypeScript single-page admin UI under `backend/web/`.
 - Static asset serving from the Rust backend under `/admin` and `/admin/assets/*`.
 - Admin-only JSON APIs under `/admin/api/*`.
 - Real admin auth using `auth.admin`.
