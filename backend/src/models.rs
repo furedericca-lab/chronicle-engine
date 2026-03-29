@@ -14,7 +14,20 @@ pub struct Actor {
     pub session_key: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryProvenance {
+    pub memory_id: String,
+    pub source_kind: String,
+    pub source_ref: Option<String>,
+    pub source_label: Option<String>,
+    pub source_detail_json: Option<String>,
+    pub job_id: Option<String>,
+    pub artifact_id: Option<String>,
+    pub created_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct Principal {
     pub user_id: String,
     pub agent_id: String,
@@ -122,7 +135,7 @@ pub enum MessageRole {
     System,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum StoreRequest {
     ToolStore {
@@ -195,7 +208,7 @@ pub struct UpdateResponse {
     pub result: MemoryMutationResult,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeleteRequest {
     pub actor: Actor,
@@ -537,6 +550,7 @@ pub struct DistillArtifact {
 pub enum DistillArtifactKind {
     Lesson,
     GovernanceCandidate,
+    MemoryPromotion,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -544,6 +558,8 @@ pub enum DistillArtifactKind {
 pub enum DistillArtifactSubtype {
     FollowUpFocus,
     NextTurnGuidance,
+    StableDecision,
+    DurablePractice,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

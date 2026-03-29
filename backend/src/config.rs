@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub storage: StorageConfig,
@@ -18,35 +18,41 @@ pub struct AppConfig {
     pub retrieval: RetrievalConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ServerConfig {
     pub bind: String,
+    #[serde(default = "default_admin_assets_path")]
+    pub admin_assets_path: PathBuf,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+fn default_admin_assets_path() -> PathBuf {
+    PathBuf::from("web/dist")
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StorageConfig {
     pub lancedb_path: PathBuf,
     pub sqlite_path: PathBuf,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AuthConfig {
     pub runtime: TokenConfig,
     pub admin: TokenConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TokenConfig {
     pub token: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProvidersConfig {
     #[serde(default)]
     pub embedding: EmbeddingProviderConfig,
@@ -54,7 +60,7 @@ pub struct ProvidersConfig {
     pub rerank: RerankProviderConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EmbeddingProviderConfig {
     #[serde(default = "default_embedding_provider")]
     pub provider: String,
@@ -82,7 +88,7 @@ pub struct EmbeddingProviderConfig {
     pub cache_ttl_ms: u64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RerankProviderConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -104,7 +110,7 @@ pub struct RerankProviderConfig {
     pub timeout_ms: u64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RetrievalConfig {
     #[serde(default = "default_candidate_pool_size")]
     pub candidate_pool_size: usize,
@@ -327,6 +333,15 @@ impl AppConfig {
         cfg.validate()
             .with_context(|| format!("invalid backend config loaded from {}", path.display()))?;
         Ok(cfg)
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        self.validate().context("refusing to save invalid config")?;
+        let toml_str = toml::to_string_pretty(self)
+            .context("failed to serialize config to TOML")?;
+        fs::write(path, toml_str)
+            .with_context(|| format!("failed to write config to {}", path.display()))?;
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {

@@ -54,6 +54,14 @@ const MAX_ACCESS_COUNT: i64 = 10_000;
 const ACCESS_UPDATE_MAX_ROWS: usize = 64;
 const DISTILL_MAX_QUOTE_LEN: usize = 160;
 
+/// Stats returned for each principal in the admin principal listing.
+pub struct AdminPrincipalStats {
+    pub memory_count: u64,
+    pub transcript_count: u64,
+    pub distill_job_count: u64,
+    pub last_activity_at: Option<i64>,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
@@ -77,6 +85,81 @@ impl AppState {
             idempotency_store,
         })
     }
+
+    pub async fn admin_list_memories(
+        &self,
+        principal: &crate::models::Principal,
+    ) -> AppResult<Vec<crate::admin::dto::AdminMemoryListItem>> {
+        let table = self.memory_repo.open_or_create_table().await?;
+        let filter = format!(
+            "principal_user_id = '{}' AND principal_agent_id = '{}'",
+            crate::state::escape_sql_literal(&principal.user_id),
+            crate::state::escape_sql_literal(&principal.agent_id)
+        );
+        let mut rows = self.memory_repo.query_rows(&table, Some(filter)).await?;
+        rows.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
+
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            let prov = self.job_store.get_memory_provenance(&row.id).unwrap_or(None);
+            let is_distill_derived = prov.as_ref().map(|p| p.job_id.is_some()).unwrap_or(false);
+
+            items.push(crate::admin::dto::AdminMemoryListItem {
+                id: row.id.clone(),
+                principal: principal.clone(),
+                text_preview: row.text.chars().take(100).collect(),
+                category: Some(row.category),
+                behavioral_kind: row.behavioral_kind.map(|k| format!("{:?}", k).to_lowercase()),
+                scope: row.scope,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                access_count: row.access_count as u64,
+                last_accessed_at: if row.last_accessed_at > 0 { Some(row.last_accessed_at) } else { None },
+                source: prov,
+                is_behavioral: row.category == crate::models::Category::Behavioral,
+                is_distill_derived,
+            });
+        }
+        Ok(items)
+    }
+
+    pub async fn admin_get_memory(
+        &self,
+        principal: &crate::models::Principal,
+        memory_id: &str,
+    ) -> AppResult<Option<crate::admin::dto::AdminMemoryDetail>> {
+        let table = self.memory_repo.open_or_create_table().await?;
+        let filter = format!(
+            "id = '{}' AND principal_user_id = '{}' AND principal_agent_id = '{}'",
+            crate::state::escape_sql_literal(memory_id),
+            crate::state::escape_sql_literal(&principal.user_id),
+            crate::state::escape_sql_literal(&principal.agent_id)
+        );
+        let mut rows = self.memory_repo.query_rows(&table, Some(filter)).await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let row = rows.remove(0);
+        let prov = self.job_store.get_memory_provenance(&row.id).unwrap_or(None);
+        let is_distill_derived = prov.as_ref().map(|p| p.job_id.is_some()).unwrap_or(false);
+        Ok(Some(crate::admin::dto::AdminMemoryDetail {
+                id: row.id.clone(),
+                principal: principal.clone(),
+                text: row.text,
+                category: Some(row.category),
+                behavioral_kind: row.behavioral_kind.map(|k| format!("{:?}", k).to_lowercase()),
+                scope: row.scope,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                access_count: row.access_count as u64,
+                last_accessed_at: if row.last_accessed_at > 0 { Some(row.last_accessed_at) } else { None },
+                source: prov,
+                is_behavioral: row.category == crate::models::Category::Behavioral,
+                is_distill_derived,
+                strict_key: row.strict_key,
+        }))
+    }
+
 
     pub async fn execute_distill_job(
         &self,
@@ -136,6 +219,22 @@ impl AppState {
                 let persisted_ids: Vec<String> =
                     response.results.into_iter().map(|row| row.id).collect();
                 persisted_memory_count += persisted_ids.len() as u64;
+
+                for memory_id in &persisted_ids {
+                    let prov = crate::models::MemoryProvenance {
+                        memory_id: memory_id.clone(),
+                        source_kind: distill_mode_to_str(req.mode).to_string(),
+                        source_ref: None,
+                        source_label: None,
+                        source_detail_json: None,
+                        job_id: Some(job_id.to_string()),
+                        artifact_id: Some(artifact.artifact_id.clone()),
+                        created_at: Some(now_millis()),
+                    };
+                    if let Err(err) = self.job_store.save_memory_provenance(&prov) {
+                        tracing::error!("failed to sync distill provenance for artifact {}: {:?}", artifact.artifact_id, err);
+                    }
+                }
                 artifact.persistence = Some(DistillArtifactPersistence {
                     persist_mode: DistillPersistMode::PersistMemoryRows,
                     persisted_memory_ids: persisted_ids,
@@ -151,6 +250,476 @@ impl AppState {
             persisted_memory_count,
             warnings,
         })
+    }
+
+    // ---- Admin-plane methods ----
+
+    /// List all known principals across LanceDB memories, transcripts, and distill jobs.
+    /// Sorted by most-recent activity descending.
+    pub async fn list_admin_principals(
+        &self,
+    ) -> AppResult<Vec<(Principal, AdminPrincipalStats)>> {
+        // Collect principals from SQLite (transcripts + distill jobs).
+        let conn = self.job_store.open_conn().map_err(AppError::from)?;
+        let mut principal_map: std::collections::HashMap<
+            (String, String),
+            AdminPrincipalStats,
+        > = std::collections::HashMap::new();
+
+        // From distill_jobs.
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT user_id, agent_id, COUNT(*) as cnt, MAX(updated_at) as last_at
+                     FROM distill_jobs GROUP BY user_id, agent_id",
+                )
+                .map_err(|e| AppError::internal(format!("sqlite prepare error: {e}")))?;
+            let mut rows = stmt
+                .query(params![])
+                .map_err(|e| AppError::internal(format!("sqlite query error: {e}")))?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| AppError::internal(format!("sqlite row error: {e}")))?
+            {
+                let user_id: String = row.get(0).unwrap_or_default();
+                let agent_id: String = row.get(1).unwrap_or_default();
+                let count: u64 = row.get::<_, i64>(2).unwrap_or(0) as u64;
+                let last_at: Option<i64> = row.get(3).ok();
+                let entry = principal_map
+                    .entry((user_id, agent_id))
+                    .or_insert(AdminPrincipalStats {
+                        memory_count: 0,
+                        transcript_count: 0,
+                        distill_job_count: 0,
+                        last_activity_at: None,
+                    });
+                entry.distill_job_count = count;
+                entry.last_activity_at = max_optional_i64(entry.last_activity_at, last_at);
+            }
+        }
+
+        // From session_transcript_messages.
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT user_id, agent_id, COUNT(DISTINCT session_key || '|' || session_id) as cnt, MAX(created_at) as last_at
+                     FROM session_transcript_messages GROUP BY user_id, agent_id",
+                )
+                .map_err(|e| AppError::internal(format!("sqlite prepare error: {e}")))?;
+            let mut rows = stmt
+                .query(params![])
+                .map_err(|e| AppError::internal(format!("sqlite query error: {e}")))?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| AppError::internal(format!("sqlite row error: {e}")))?
+            {
+                let user_id: String = row.get(0).unwrap_or_default();
+                let agent_id: String = row.get(1).unwrap_or_default();
+                let count: u64 = row.get::<_, i64>(2).unwrap_or(0) as u64;
+                let last_at: Option<i64> = row.get(3).ok();
+                let entry = principal_map
+                    .entry((user_id, agent_id))
+                    .or_insert(AdminPrincipalStats {
+                        memory_count: 0,
+                        transcript_count: 0,
+                        distill_job_count: 0,
+                        last_activity_at: None,
+                    });
+                entry.transcript_count = count;
+                entry.last_activity_at = max_optional_i64(entry.last_activity_at, last_at);
+            }
+        }
+
+        // From LanceDB memories: list distinct principals with counts.
+        if let Ok(table) = self.memory_repo.open_or_create_table().await {
+            if let Ok(batch_stream) = table
+                .query()
+                .select(lancedb::query::Select::columns(&[
+                    "principal_user_id",
+                    "principal_agent_id",
+                    "updated_at",
+                ]))
+                .limit(50_000)
+                .execute()
+                .await
+            {
+                if let Ok(batches) = batch_stream.try_collect::<Vec<_>>().await {
+                    for batch in &batches {
+                        let user_ids = batch
+                            .column_by_name("principal_user_id")
+                            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+                        let agent_ids = batch
+                            .column_by_name("principal_agent_id")
+                            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+                        let updated_ats = batch
+                            .column_by_name("updated_at")
+                            .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+                        if let (Some(users), Some(agents)) = (user_ids, agent_ids) {
+                            for i in 0..batch.num_rows() {
+                                let uid = users.value(i).to_string();
+                                let aid = agents.value(i).to_string();
+                                let ts = updated_ats.map(|a| a.value(i));
+                                let entry = principal_map
+                                    .entry((uid, aid))
+                                    .or_insert(AdminPrincipalStats {
+                                        memory_count: 0,
+                                        transcript_count: 0,
+                                        distill_job_count: 0,
+                                        last_activity_at: None,
+                                    });
+                                entry.memory_count += 1;
+                                entry.last_activity_at =
+                                    max_optional_i64(entry.last_activity_at, ts);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by last activity descending, then memory count, then transcript, then distill.
+        let mut result: Vec<(Principal, AdminPrincipalStats)> = principal_map
+            .into_iter()
+            .map(|((user_id, agent_id), stats)| {
+                (Principal { user_id, agent_id }, stats)
+            })
+            .collect();
+        result.sort_by(|(a_p, a_s), (b_p, b_s)| {
+            b_s.last_activity_at
+                .unwrap_or(0)
+                .cmp(&a_s.last_activity_at.unwrap_or(0))
+                .then_with(|| b_s.memory_count.cmp(&a_s.memory_count))
+                .then_with(|| b_s.transcript_count.cmp(&a_s.transcript_count))
+                .then_with(|| b_s.distill_job_count.cmp(&a_s.distill_job_count))
+                .then_with(|| a_p.user_id.cmp(&b_p.user_id))
+                .then_with(|| a_p.agent_id.cmp(&b_p.agent_id))
+        });
+        Ok(result)
+    }
+
+    /// Side-effect-free generic recall simulation for the admin plane.
+    /// Does NOT update access_count or last_accessed_at.
+    pub async fn recall_generic_simulate(
+        &self,
+        principal: &Principal,
+        query: &str,
+        limit: u64,
+        categories: Option<&[Category]>,
+        exclude_behavioral: Option<bool>,
+        max_age_days: Option<u64>,
+    ) -> AppResult<(Vec<RecallGenericRow>, RetrievalTrace)> {
+        // Build a synthetic RecallGenericRequest with a dummy Actor.
+        let actor = Actor {
+            user_id: principal.user_id.clone(),
+            agent_id: principal.agent_id.clone(),
+            session_id: "admin-simulation".to_string(),
+            session_key: "admin-simulation".to_string(),
+        };
+        let req = RecallGenericRequest {
+            actor,
+            query: query.to_string(),
+            limit,
+            categories: categories.map(|c| c.to_vec()),
+            exclude_behavioral,
+            max_age_days,
+            max_entries_per_key: None,
+        };
+        let (response, trace) = self
+            .memory_repo
+            .recall_generic_no_side_effects(req)
+            .await?;
+        let trace = trace.ok_or_else(|| {
+            AppError::internal("admin recall simulation trace was not produced")
+        })?;
+        Ok((response.rows, trace))
+    }
+
+    /// Side-effect-free behavioral recall simulation for the admin plane.
+    /// Does NOT update access_count or last_accessed_at.
+    pub async fn recall_behavioral_simulate(
+        &self,
+        principal: &Principal,
+        query: &str,
+        limit: u64,
+        behavioral_mode: Option<BehavioralRecallMode>,
+        include_kinds: Option<&[ReflectionKind]>,
+        min_score: Option<f64>,
+    ) -> AppResult<(Vec<crate::models::RecallBehavioralRow>, RetrievalTrace)> {
+        let actor = Actor {
+            user_id: principal.user_id.clone(),
+            agent_id: principal.agent_id.clone(),
+            session_id: "admin-simulation".to_string(),
+            session_key: "admin-simulation".to_string(),
+        };
+        let req = RecallBehavioralRequest {
+            actor,
+            query: query.to_string(),
+            mode: behavioral_mode,
+            limit,
+            include_kinds: include_kinds.map(|k| k.to_vec()),
+            min_score,
+        };
+        let (response, trace) = self
+            .memory_repo
+            .recall_behavioral_no_side_effects(req)
+            .await?;
+        let trace = trace.ok_or_else(|| {
+            AppError::internal("admin behavioral recall simulation trace was not produced")
+        })?;
+        Ok((response.rows, trace))
+    }
+
+    /// List distill jobs for a given principal (admin-scoped).
+    pub fn admin_list_distill_jobs(
+        &self,
+        principal: &Principal,
+    ) -> AppResult<Vec<crate::admin::dto::AdminDistillJobListItem>> {
+        self.job_store.list_distill_jobs_for_principal(
+            &principal.user_id,
+            &principal.agent_id,
+        )
+    }
+
+    /// Get a single distill job detail with artifacts inline (admin-scoped).
+    pub fn admin_get_distill_job(
+        &self,
+        principal: &Principal,
+        job_id: &str,
+    ) -> AppResult<Option<crate::admin::dto::AdminDistillJobDetail>> {
+        self.job_store.get_distill_job_detail_for_principal(
+            job_id,
+            &principal.user_id,
+            &principal.agent_id,
+        )
+    }
+
+    /// List transcript heads for a given principal (admin-scoped).
+    pub fn admin_list_transcripts(
+        &self,
+        principal: &Principal,
+    ) -> AppResult<Vec<crate::admin::dto::AdminTranscriptHead>> {
+        self.job_store.list_transcript_heads_for_principal(
+            &principal.user_id,
+            &principal.agent_id,
+        )
+    }
+
+    /// Get transcript detail by opaque transcript id (admin-scoped).
+    pub fn admin_get_transcript_detail(
+        &self,
+        principal: &Principal,
+        session_key: &str,
+        session_id: &str,
+    ) -> AppResult<Option<crate::admin::dto::AdminTranscriptDetailResponse>> {
+        self.job_store.get_transcript_detail(
+            &principal.user_id,
+            &principal.agent_id,
+            session_key,
+            session_id,
+        )
+    }
+
+    /// List governance-relevant artifacts for a given principal.
+    pub fn admin_list_governance_artifacts(
+        &self,
+        principal: &Principal,
+    ) -> AppResult<Vec<crate::admin::dto::AdminGovernanceArtifact>> {
+        self.job_store.list_governance_artifacts_for_principal(
+            &principal.user_id,
+            &principal.agent_id,
+        )
+    }
+
+    /// Review a governance artifact (approve/dismiss).
+    pub fn admin_review_governance_artifact(
+        &self,
+        principal: &Principal,
+        artifact_id: &str,
+        review_status: &str,
+        reviewer_note: Option<&str>,
+        admin_subject: &str,
+    ) -> AppResult<crate::admin::dto::AdminGovernanceReviewResponse> {
+        let now = now_millis();
+        self.job_store.update_governance_review(
+            artifact_id,
+            &principal.user_id,
+            &principal.agent_id,
+            review_status,
+            reviewer_note,
+            now,
+        )?;
+        self.admin_emit_audit(
+            admin_subject,
+            "governance.review",
+            Some(principal),
+            Some("governance-artifact"),
+            Some(artifact_id),
+            "success",
+            Some(&serde_json::json!({"reviewStatus": review_status}).to_string()),
+        )?;
+        Ok(crate::admin::dto::AdminGovernanceReviewResponse {
+            artifact_id: artifact_id.to_string(),
+            review_status: review_status.to_string(),
+            reviewed_at: now,
+        })
+    }
+
+    /// Promote a governance artifact to a memory row.
+    pub async fn admin_promote_governance_artifact(
+        &self,
+        principal: &Principal,
+        artifact_id: &str,
+        reviewer_note: Option<&str>,
+        admin_subject: &str,
+    ) -> AppResult<crate::admin::dto::AdminGovernancePromoteResponse> {
+        // Fetch the artifact first.
+        let artifact = self.job_store.get_governance_artifact(artifact_id, &principal.user_id, &principal.agent_id)?
+            .ok_or_else(|| AppError::not_found("governance artifact not found"))?;
+
+        // Behavioral rows cannot be promoted.
+        if artifact.category == Category::Behavioral {
+            return Ok(crate::admin::dto::AdminGovernancePromoteResponse {
+                artifact_id: artifact_id.to_string(),
+                promoted: false,
+                persisted_memory_id: None,
+                reason: Some("behavioral-guidance rows cannot be created via promotion".to_string()),
+            });
+        }
+
+        let actor = Actor {
+            user_id: principal.user_id.clone(),
+            agent_id: principal.agent_id.clone(),
+            session_id: "admin-promote".to_string(),
+            session_key: "admin".to_string(),
+        };
+
+        let memory = crate::models::ToolStoreMemory {
+            text: artifact.text.clone(),
+            category: Some(artifact.category),
+            importance: Some(artifact.importance),
+        };
+
+        let store_req = crate::models::StoreRequest::ToolStore { actor, memory };
+        let response = self.memory_repo.store(store_req).await?;
+
+        let memory_id = response.results.first().map(|r| r.id.clone());
+
+        if let Some(ref mid) = memory_id {
+            let prov = crate::models::MemoryProvenance {
+                memory_id: mid.clone(),
+                source_kind: "governance-promote".to_string(),
+                source_ref: Some(artifact_id.to_string()),
+                source_label: reviewer_note.map(|n| n.to_string()),
+                source_detail_json: None,
+                job_id: Some(artifact.job_id.clone()),
+                artifact_id: Some(artifact_id.to_string()),
+                created_at: Some(now_millis()),
+            };
+            if let Err(e) = self.job_store.save_memory_provenance(&prov) {
+                tracing::error!("failed to save provenance for promoted artifact: {:?}", e);
+            }
+        }
+
+        // Mark govenance artifact as promoted.
+        let _ = self.job_store.update_governance_review(
+            artifact_id,
+            &principal.user_id,
+            &principal.agent_id,
+            "promoted",
+            reviewer_note,
+            now_millis(),
+        );
+
+        self.admin_emit_audit(
+            admin_subject,
+            "governance.promote",
+            Some(principal),
+            Some("governance-artifact"),
+            Some(artifact_id),
+            "success",
+            memory_id.as_deref().map(|mid| format!("{{\"persistedMemoryId\":\"{mid}\"}}"  )).as_deref(),
+        )?;
+
+        Ok(crate::admin::dto::AdminGovernancePromoteResponse {
+            artifact_id: artifact_id.to_string(),
+            promoted: true,
+            persisted_memory_id: memory_id,
+            reason: None,
+        })
+    }
+
+    /// Read the current runtime config as JSON.
+    pub fn admin_get_settings(&self) -> AppResult<serde_json::Value> {
+        // Return a sanitized view of the config (redact tokens).
+        let mut config = serde_json::to_value(&self.config)
+            .map_err(|e| AppError::internal(format!("failed to serialize config: {e}")))?;
+        // Redact sensitive fields.
+        if let Some(auth) = config.get_mut("auth") {
+            if let Some(runtime) = auth.get_mut("runtime") {
+                if let Some(token) = runtime.get_mut("token") {
+                    *token = serde_json::json!("****");
+                }
+            }
+            if let Some(admin) = auth.get_mut("admin") {
+                if let Some(token) = admin.get_mut("token") {
+                    *token = serde_json::json!("****");
+                }
+            }
+        }
+        if let Some(providers) = config.get_mut("providers") {
+            if let Some(embedding) = providers.get_mut("embedding") {
+                if let Some(api_key) = embedding.get_mut("api_key") {
+                    if !api_key.is_null() {
+                        *api_key = serde_json::json!("****");
+                    }
+                }
+            }
+            if let Some(rerank) = providers.get_mut("rerank") {
+                if let Some(api_key) = rerank.get_mut("api_key") {
+                    if !api_key.is_null() {
+                        *api_key = serde_json::json!("****");
+                    }
+                }
+            }
+        }
+        Ok(config)
+    }
+
+    /// Get audit log entries.
+    pub fn admin_get_audit_log(&self, limit: u64, offset: u64) -> AppResult<Vec<crate::admin::dto::AdminAuditEntry>> {
+        self.job_store.list_admin_audit_entries(limit, offset)
+    }
+
+    /// Emit an audit entry. Best effort; logged but not failing the outer operation.
+    pub fn admin_emit_audit(
+        &self,
+        admin_subject: &str,
+        action: &str,
+        target_principal: Option<&Principal>,
+        target_resource_kind: Option<&str>,
+        target_resource_id: Option<&str>,
+        outcome: &str,
+        details_json: Option<&str>,
+    ) -> AppResult<()> {
+        let entry = crate::admin::dto::AdminAuditEntry {
+            id: format!("audit_{}", uuid::Uuid::new_v4().simple()),
+            timestamp: now_millis(),
+            admin_subject: admin_subject.to_string(),
+            action: action.to_string(),
+            target_principal_user_id: target_principal.map(|p| p.user_id.clone()),
+            target_principal_agent_id: target_principal.map(|p| p.agent_id.clone()),
+            target_resource_kind: target_resource_kind.map(|s| s.to_string()),
+            target_resource_id: target_resource_id.map(|s| s.to_string()),
+            outcome: outcome.to_string(),
+            details_json: details_json.map(|s| s.to_string()),
+        };
+        tracing::info!(
+            action = %entry.action,
+            admin = %entry.admin_subject,
+            outcome = %entry.outcome,
+            "admin audit event"
+        );
+        self.job_store.insert_admin_audit_entry(&entry)
     }
 }
 
@@ -1919,7 +2488,7 @@ impl LanceMemoryRepo {
         &self,
         req: RecallGenericRequest,
     ) -> AppResult<RecallGenericResponse> {
-        let (response, _) = self.recall_generic_internal(req, false).await?;
+        let (response, _) = self.recall_generic_internal(req, false, true).await?;
         Ok(response)
     }
 
@@ -1927,17 +2496,27 @@ impl LanceMemoryRepo {
         &self,
         req: RecallGenericRequest,
     ) -> AppResult<(RecallGenericResponse, RetrievalTrace)> {
-        let (response, trace) = self.recall_generic_internal(req, true).await?;
+        let (response, trace) = self.recall_generic_internal(req, true, true).await?;
         let trace = trace.ok_or_else(|| {
             AppError::internal("generic recall trace was requested but no trace was produced")
         })?;
         Ok((response, trace))
     }
 
+    /// Side-effect-free generic recall for admin simulation.
+    /// Always includes trace, never records access metadata.
+    pub async fn recall_generic_no_side_effects(
+        &self,
+        req: RecallGenericRequest,
+    ) -> AppResult<(RecallGenericResponse, Option<RetrievalTrace>)> {
+        self.recall_generic_internal(req, true, false).await
+    }
+
     async fn recall_generic_internal(
         &self,
         req: RecallGenericRequest,
         include_trace: bool,
+        record_access: bool,
     ) -> AppResult<(RecallGenericResponse, Option<RetrievalTrace>)> {
         let limit = clamped_limit(req.limit) as usize;
         let table = self.open_or_create_table().await?;
@@ -1974,29 +2553,38 @@ impl LanceMemoryRepo {
             )
             .await?;
         let ranked = apply_generic_recall_filters(ranked, &req);
-        if let Err(err) = self
-            .record_recall_access_metadata(&table, &req.actor, &ranked)
-            .await
-        {
-            emit_internal_diagnostic(
-                self.generic_recall_engine.settings.diagnostics,
-                json!({
-                    "event": "retrieval.access.update-failed",
-                    "reason": truncate_for_error(&format!("{err:?}"), 240),
-                }),
-            );
-            if let Some(trace) = trace.as_mut() {
-                let mut stage =
-                    make_trace_stage("access-update", RetrievalTraceStageStatus::Failed);
+        if record_access {
+            if let Err(err) = self
+                .record_recall_access_metadata(&table, &req.actor, &ranked)
+                .await
+            {
+                emit_internal_diagnostic(
+                    self.generic_recall_engine.settings.diagnostics,
+                    json!({
+                        "event": "retrieval.access.update-failed",
+                        "reason": truncate_for_error(&format!("{err:?}"), 240),
+                    }),
+                );
+                if let Some(trace) = trace.as_mut() {
+                    let mut stage =
+                        make_trace_stage("access-update", RetrievalTraceStageStatus::Failed);
+                    stage.input_count = Some(ranked.len() as u64);
+                    stage.output_count = Some(0);
+                    stage.reason = Some(truncate_for_error(&format!("{err:?}"), 240));
+                    trace.push(stage);
+                }
+            } else if let Some(trace) = trace.as_mut() {
+                let mut stage = make_trace_stage("access-update", RetrievalTraceStageStatus::Ok);
                 stage.input_count = Some(ranked.len() as u64);
-                stage.output_count = Some(0);
-                stage.reason = Some(truncate_for_error(&format!("{err:?}"), 240));
+                stage.output_count = Some(ranked.len().min(ACCESS_UPDATE_MAX_ROWS) as u64);
                 trace.push(stage);
             }
         } else if let Some(trace) = trace.as_mut() {
-            let mut stage = make_trace_stage("access-update", RetrievalTraceStageStatus::Ok);
+            let mut stage =
+                make_trace_stage("access-update", RetrievalTraceStageStatus::Skipped);
+            stage.reason = Some("admin simulation: side-effects suppressed".to_string());
             stage.input_count = Some(ranked.len() as u64);
-            stage.output_count = Some(ranked.len().min(ACCESS_UPDATE_MAX_ROWS) as u64);
+            stage.output_count = Some(0);
             trace.push(stage);
         }
         let response_rows = ranked
@@ -2032,7 +2620,7 @@ impl LanceMemoryRepo {
         &self,
         req: RecallBehavioralRequest,
     ) -> AppResult<RecallBehavioralResponse> {
-        let (response, _) = self.recall_behavioral_guidance_internal(req, false).await?;
+        let (response, _) = self.recall_behavioral_guidance_internal(req, false, true).await?;
         Ok(response)
     }
 
@@ -2040,17 +2628,27 @@ impl LanceMemoryRepo {
         &self,
         req: RecallBehavioralRequest,
     ) -> AppResult<(RecallBehavioralResponse, RetrievalTrace)> {
-        let (response, trace) = self.recall_behavioral_guidance_internal(req, true).await?;
+        let (response, trace) = self.recall_behavioral_guidance_internal(req, true, true).await?;
         let trace = trace.ok_or_else(|| {
             AppError::internal("behavioral recall trace was requested but no trace was produced")
         })?;
         Ok((response, trace))
     }
 
+    /// Side-effect-free behavioral recall for admin simulation.
+    /// Always includes trace, never records access metadata.
+    pub async fn recall_behavioral_no_side_effects(
+        &self,
+        req: RecallBehavioralRequest,
+    ) -> AppResult<(RecallBehavioralResponse, Option<RetrievalTrace>)> {
+        self.recall_behavioral_guidance_internal(req, true, false).await
+    }
+
     async fn recall_behavioral_guidance_internal(
         &self,
         req: RecallBehavioralRequest,
         include_trace: bool,
+        record_access: bool,
     ) -> AppResult<(RecallBehavioralResponse, Option<RetrievalTrace>)> {
         let mode = req.mode.unwrap_or(BehavioralRecallMode::InvariantDerived);
         let limit = clamped_limit(req.limit) as usize;
@@ -2102,29 +2700,38 @@ impl LanceMemoryRepo {
             )
             .await?;
         let ranked = apply_behavioral_guidance_recall_filters(ranked, &req);
-        if let Err(err) = self
-            .record_recall_access_metadata(&table, &req.actor, &ranked)
-            .await
-        {
-            emit_internal_diagnostic(
-                self.generic_recall_engine.settings.diagnostics,
-                json!({
-                    "event": "retrieval.access.update-failed",
-                    "reason": truncate_for_error(&format!("{err:?}"), 240),
-                }),
-            );
-            if let Some(trace) = trace.as_mut() {
-                let mut stage =
-                    make_trace_stage("access-update", RetrievalTraceStageStatus::Failed);
+        if record_access {
+            if let Err(err) = self
+                .record_recall_access_metadata(&table, &req.actor, &ranked)
+                .await
+            {
+                emit_internal_diagnostic(
+                    self.generic_recall_engine.settings.diagnostics,
+                    json!({
+                        "event": "retrieval.access.update-failed",
+                        "reason": truncate_for_error(&format!("{err:?}"), 240),
+                    }),
+                );
+                if let Some(trace) = trace.as_mut() {
+                    let mut stage =
+                        make_trace_stage("access-update", RetrievalTraceStageStatus::Failed);
+                    stage.input_count = Some(ranked.len() as u64);
+                    stage.output_count = Some(0);
+                    stage.reason = Some(truncate_for_error(&format!("{err:?}"), 240));
+                    trace.push(stage);
+                }
+            } else if let Some(trace) = trace.as_mut() {
+                let mut stage = make_trace_stage("access-update", RetrievalTraceStageStatus::Ok);
                 stage.input_count = Some(ranked.len() as u64);
-                stage.output_count = Some(0);
-                stage.reason = Some(truncate_for_error(&format!("{err:?}"), 240));
+                stage.output_count = Some(ranked.len().min(ACCESS_UPDATE_MAX_ROWS) as u64);
                 trace.push(stage);
             }
         } else if let Some(trace) = trace.as_mut() {
-            let mut stage = make_trace_stage("access-update", RetrievalTraceStageStatus::Ok);
+            let mut stage =
+                make_trace_stage("access-update", RetrievalTraceStageStatus::Skipped);
+            stage.reason = Some("admin simulation: side-effects suppressed".to_string());
             stage.input_count = Some(ranked.len() as u64);
-            stage.output_count = Some(ranked.len().min(ACCESS_UPDATE_MAX_ROWS) as u64);
+            stage.output_count = Some(0);
             trace.push(stage);
         }
 
@@ -3126,7 +3733,7 @@ impl IdempotencyStore {
         Ok(())
     }
 
-    fn open_conn(&self) -> anyhow::Result<Connection> {
+    pub(crate) fn open_conn(&self) -> anyhow::Result<Connection> {
         Ok(Connection::open(&self.sqlite_path)?)
     }
 }
@@ -3695,6 +4302,16 @@ impl JobStore {
                 role TEXT NOT NULL,
                 text TEXT NOT NULL,
                 created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_provenance (
+                memory_id TEXT PRIMARY KEY,
+                source_kind TEXT NOT NULL,
+                source_ref TEXT,
+                source_label TEXT,
+                source_detail_json TEXT,
+                job_id TEXT,
+                artifact_id TEXT,
+                created_at INTEGER NOT NULL
             );",
         )?;
         conn.execute(
@@ -3708,10 +4325,510 @@ impl JobStore {
             "subtype",
             "ALTER TABLE distill_artifacts ADD COLUMN subtype TEXT",
         )?;
+        // Governance review state table.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS governance_reviews (
+                artifact_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                review_status TEXT NOT NULL,
+                reviewer_note TEXT,
+                reviewed_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS admin_audit_log (
+                id TEXT PRIMARY KEY,
+                timestamp INTEGER NOT NULL,
+                admin_subject TEXT NOT NULL,
+                action TEXT NOT NULL,
+                target_principal_user_id TEXT,
+                target_principal_agent_id TEXT,
+                target_resource_kind TEXT,
+                target_resource_id TEXT,
+                outcome TEXT NOT NULL,
+                details_json TEXT
+            );",
+        )?;
         Ok(())
     }
 
-    fn open_conn(&self) -> anyhow::Result<Connection> {
+    pub fn save_memory_provenance(
+        &self,
+        prov: &crate::models::MemoryProvenance,
+    ) -> AppResult<()> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        let now = prov.created_at.unwrap_or_else(now_millis);
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_provenance (
+                memory_id, source_kind, source_ref, source_label, source_detail_json, job_id, artifact_id, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                &prov.memory_id,
+                &prov.source_kind,
+                &prov.source_ref,
+                &prov.source_label,
+                &prov.source_detail_json,
+                &prov.job_id,
+                &prov.artifact_id,
+                now,
+            ],
+        )
+        .map_err(|err| AppError::internal(format!("failed to save memory provenance: {err}")))?;
+        Ok(())
+    }
+
+    pub fn delete_memory_provenance(&self, memory_id: &str) -> AppResult<()> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        conn.execute(
+            "DELETE FROM memory_provenance WHERE memory_id = ?1",
+            params![memory_id],
+        )
+        .map_err(|err| AppError::internal(format!("failed to delete memory provenance: {err}")))?;
+        Ok(())
+    }
+
+    pub fn get_memory_provenance(&self, memory_id: &str) -> AppResult<Option<crate::models::MemoryProvenance>> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT memory_id, source_kind, source_ref, source_label, source_detail_json, job_id, artifact_id, created_at
+             FROM memory_provenance
+             WHERE memory_id = ?1",
+        ).map_err(AppError::from)?;
+
+        let mut rows = stmt.query(params![memory_id]).map_err(AppError::from)?;
+        if let Some(row) = rows.next().map_err(AppError::from)? {
+            Ok(Some(crate::models::MemoryProvenance {
+                memory_id: row.get(0)?,
+                source_kind: row.get(1)?,
+                source_ref: row.get(2)?,
+                source_label: row.get(3)?,
+                source_detail_json: row.get(4)?,
+                job_id: row.get(5)?,
+                artifact_id: row.get(6)?,
+                created_at: Some(row.get(7)?),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // ─── Admin-plane JobStore methods ───
+
+    /// List distill jobs for a given principal, sorted by updated_at desc.
+    pub fn list_distill_jobs_for_principal(
+        &self,
+        user_id: &str,
+        agent_id: &str,
+    ) -> AppResult<Vec<crate::admin::dto::AdminDistillJobListItem>> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        let mut stmt = conn.prepare(
+            "SELECT job_id, status, mode, source_kind, created_at, updated_at,
+                    result_summary_json, error_json
+             FROM distill_jobs
+             WHERE user_id = ?1 AND agent_id = ?2
+             ORDER BY updated_at DESC
+             LIMIT 200",
+        ).map_err(|e| AppError::internal(format!("sqlite prepare error: {e}")))?;
+
+        let mut result = Vec::new();
+        let mut rows = stmt.query(params![user_id, agent_id])
+            .map_err(|e| AppError::internal(format!("sqlite query error: {e}")))?;
+        while let Some(row) = rows.next().map_err(|e| AppError::internal(format!("sqlite row error: {e}")))? {
+            let status_str: String = row.get(1).unwrap_or_default();
+            let mode_str: String = row.get(2).unwrap_or_default();
+            let source_kind_str: String = row.get(3).unwrap_or_default();
+            let result_json: Option<String> = row.get(6).unwrap_or(None);
+            let error_json: Option<String> = row.get(7).unwrap_or(None);
+
+            result.push(crate::admin::dto::AdminDistillJobListItem {
+                job_id: row.get(0).unwrap_or_default(),
+                status: parse_distill_status(&status_str)?,
+                mode: parse_distill_mode(&mode_str)?,
+                source_kind: parse_distill_source_kind(&source_kind_str)?,
+                created_at: row.get(4).unwrap_or(0),
+                updated_at: row.get(5).unwrap_or(0),
+                result: result_json.as_deref().map(parse_distill_job_result_summary).transpose()?,
+                error: error_json.as_deref().map(parse_job_status_error).transpose()?,
+            });
+        }
+        Ok(result)
+    }
+
+    /// Get a single distill job with artifacts inline.
+    pub fn get_distill_job_detail_for_principal(
+        &self,
+        job_id: &str,
+        user_id: &str,
+        agent_id: &str,
+    ) -> AppResult<Option<crate::admin::dto::AdminDistillJobDetail>> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        // Fetch job row.
+        let job_opt = {
+            let mut stmt = conn.prepare(
+                "SELECT user_id, agent_id, status, mode, source_kind, created_at, updated_at,
+                        result_summary_json, error_json
+                 FROM distill_jobs
+                 WHERE job_id = ?1",
+            ).map_err(|e| AppError::internal(format!("sqlite prepare error: {e}")))?;
+            let mut rows = stmt.query(params![job_id])
+                .map_err(|e| AppError::internal(format!("sqlite query error: {e}")))?;
+            if let Some(row) = rows.next().map_err(|e| AppError::internal(format!("sqlite row error: {e}")))? {
+                let owner_uid: String = row.get(0).unwrap_or_default();
+                let owner_aid: String = row.get(1).unwrap_or_default();
+                if owner_uid != user_id || owner_aid != agent_id {
+                    return Ok(None);
+                }
+                let status_str: String = row.get(2).unwrap_or_default();
+                let mode_str: String = row.get(3).unwrap_or_default();
+                let source_kind_str: String = row.get(4).unwrap_or_default();
+                let result_json: Option<String> = row.get(7).unwrap_or(None);
+                let error_json: Option<String> = row.get(8).unwrap_or(None);
+                Some((
+                    parse_distill_status(&status_str)?,
+                    parse_distill_mode(&mode_str)?,
+                    parse_distill_source_kind(&source_kind_str)?,
+                    row.get::<_, i64>(5).unwrap_or(0),
+                    row.get::<_, i64>(6).unwrap_or(0),
+                    result_json.as_deref().map(parse_distill_job_result_summary).transpose()?,
+                    error_json.as_deref().map(parse_job_status_error).transpose()?,
+                ))
+            } else {
+                None
+            }
+        };
+
+        let Some((status, mode, source_kind, created_at, updated_at, result, error)) = job_opt else {
+            return Ok(None);
+        };
+
+        // Fetch artifacts inline.
+        let artifacts = self.load_distill_artifacts_for_job(&conn, job_id)?;
+
+        Ok(Some(crate::admin::dto::AdminDistillJobDetail {
+            job_id: job_id.to_string(),
+            status,
+            mode,
+            source_kind,
+            created_at,
+            updated_at,
+            result,
+            error,
+            artifacts,
+        }))
+    }
+
+    fn load_distill_artifacts_for_job(
+        &self,
+        conn: &Connection,
+        job_id: &str,
+    ) -> AppResult<Vec<crate::models::DistillArtifact>> {
+        let mut stmt = conn.prepare(
+            "SELECT artifact_id, job_id, kind, subtype, category, importance, text,
+                    evidence_json, tags_json, persistence_json, created_at
+             FROM distill_artifacts
+             WHERE job_id = ?1
+             ORDER BY created_at ASC",
+        ).map_err(|e| AppError::internal(format!("sqlite prepare error: {e}")))?;
+
+        let mut artifacts = Vec::new();
+        let mut rows = stmt.query(params![job_id])
+            .map_err(|e| AppError::internal(format!("sqlite query error: {e}")))?;
+        while let Some(row) = rows.next().map_err(|e| AppError::internal(format!("sqlite row error: {e}")))? {
+            let kind_str: String = row.get(2).unwrap_or_default();
+            let subtype_str: Option<String> = row.get(3).unwrap_or(None);
+            let category_str: String = row.get(4).unwrap_or_default();
+            let evidence_json_str: String = row.get(7).unwrap_or_default();
+            let tags_json_str: String = row.get(8).unwrap_or_default();
+            let persistence_json_str: Option<String> = row.get(9).unwrap_or(None);
+
+            artifacts.push(crate::models::DistillArtifact {
+                artifact_id: row.get(0).unwrap_or_default(),
+                job_id: row.get(1).unwrap_or_default(),
+                kind: parse_distill_artifact_kind(&kind_str)?,
+                subtype: subtype_str.as_deref().map(parse_distill_artifact_subtype).transpose()?,
+                category: parse_category(&category_str)?,
+                importance: row.get(5).unwrap_or(0.5),
+                text: row.get(6).unwrap_or_default(),
+                evidence: serde_json::from_str(&evidence_json_str).unwrap_or_default(),
+                tags: serde_json::from_str(&tags_json_str).unwrap_or_default(),
+                persistence: persistence_json_str.as_deref()
+                    .map(|s| serde_json::from_str(s))
+                    .transpose()
+                    .unwrap_or(None),
+            });
+        }
+        Ok(artifacts)
+    }
+
+    /// List transcript heads for a principal.
+    pub fn list_transcript_heads_for_principal(
+        &self,
+        user_id: &str,
+        agent_id: &str,
+    ) -> AppResult<Vec<crate::admin::dto::AdminTranscriptHead>> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        let mut stmt = conn.prepare(
+            "SELECT session_key, session_id, COUNT(*) as msg_count,
+                    MIN(created_at) as first_ts, MAX(created_at) as last_ts
+             FROM session_transcript_messages
+             WHERE user_id = ?1 AND agent_id = ?2
+             GROUP BY session_key, session_id
+             ORDER BY last_ts DESC
+             LIMIT 200",
+        ).map_err(|e| AppError::internal(format!("sqlite prepare error: {e}")))?;
+
+        let mut result = Vec::new();
+        let mut rows = stmt.query(params![user_id, agent_id])
+            .map_err(|e| AppError::internal(format!("sqlite query error: {e}")))?;
+        while let Some(row) = rows.next().map_err(|e| AppError::internal(format!("sqlite row error: {e}")))? {
+            let session_key: String = row.get(0).unwrap_or_default();
+            let session_id: String = row.get(1).unwrap_or_default();
+            let transcript_id = crate::admin::principal_id::encode_transcript_id(&session_key, &session_id);
+            result.push(crate::admin::dto::AdminTranscriptHead {
+                transcript_id,
+                principal: crate::models::Principal {
+                    user_id: user_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                },
+                session_key,
+                session_id,
+                message_count: row.get::<_, i64>(2).unwrap_or(0) as u64,
+                first_timestamp: row.get(3).unwrap_or(0),
+                last_timestamp: row.get(4).unwrap_or(0),
+            });
+        }
+        Ok(result)
+    }
+
+    /// Get transcript detail.
+    pub fn get_transcript_detail(
+        &self,
+        user_id: &str,
+        agent_id: &str,
+        session_key: &str,
+        session_id: &str,
+    ) -> AppResult<Option<crate::admin::dto::AdminTranscriptDetailResponse>> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        let mut stmt = conn.prepare(
+            "SELECT seq, role, text, created_at
+             FROM session_transcript_messages
+             WHERE user_id = ?1 AND agent_id = ?2
+               AND session_key = ?3 AND session_id = ?4
+             ORDER BY seq ASC",
+        ).map_err(|e| AppError::internal(format!("sqlite prepare error: {e}")))?;
+
+        let mut messages = Vec::new();
+        let mut rows = stmt.query(params![user_id, agent_id, session_key, session_id])
+            .map_err(|e| AppError::internal(format!("sqlite query error: {e}")))?;
+        while let Some(row) = rows.next().map_err(|e| AppError::internal(format!("sqlite row error: {e}")))? {
+            let role_str: String = row.get(1).unwrap_or_default();
+            messages.push(crate::admin::dto::AdminTranscriptMessage {
+                seq: row.get::<_, i64>(0).unwrap_or(0) as u64,
+                role: parse_message_role(&role_str)?,
+                text: row.get(2).unwrap_or_default(),
+                created_at: row.get(3).unwrap_or(0),
+            });
+        }
+
+        if messages.is_empty() {
+            return Ok(None);
+        }
+
+        let transcript_id = crate::admin::principal_id::encode_transcript_id(session_key, session_id);
+        Ok(Some(crate::admin::dto::AdminTranscriptDetailResponse {
+            transcript_id,
+            principal: crate::models::Principal {
+                user_id: user_id.to_string(),
+                agent_id: agent_id.to_string(),
+            },
+            session_key: session_key.to_string(),
+            session_id: session_id.to_string(),
+            messages,
+        }))
+    }
+
+    /// List governance-relevant artifacts for a principal.
+    pub fn list_governance_artifacts_for_principal(
+        &self,
+        user_id: &str,
+        agent_id: &str,
+    ) -> AppResult<Vec<crate::admin::dto::AdminGovernanceArtifact>> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        // Join distill_artifacts with distill_jobs to scope by principal,
+        // and filter to governance-relevant kinds.
+        let mut stmt = conn.prepare(
+            "SELECT da.artifact_id, da.job_id, da.kind, da.subtype, da.category,
+                    da.importance, da.text, da.tags_json,
+                    gr.review_status, gr.reviewer_note, gr.reviewed_at
+             FROM distill_artifacts da
+             JOIN distill_jobs dj ON da.job_id = dj.job_id
+             LEFT JOIN governance_reviews gr ON da.artifact_id = gr.artifact_id
+             WHERE dj.user_id = ?1 AND dj.agent_id = ?2
+               AND da.kind IN ('lesson', 'governance-candidate')
+             ORDER BY da.created_at DESC
+             LIMIT 200",
+        ).map_err(|e| AppError::internal(format!("sqlite prepare error: {e}")))?;
+
+        let mut result = Vec::new();
+        let mut rows = stmt.query(params![user_id, agent_id])
+            .map_err(|e| AppError::internal(format!("sqlite query error: {e}")))?;
+        while let Some(row) = rows.next().map_err(|e| AppError::internal(format!("sqlite row error: {e}")))? {
+            let kind_str: String = row.get(2).unwrap_or_default();
+            let subtype_str: Option<String> = row.get(3).unwrap_or(None);
+            let category_str: String = row.get(4).unwrap_or_default();
+            let tags_json: String = row.get(7).unwrap_or_default();
+
+            result.push(crate::admin::dto::AdminGovernanceArtifact {
+                artifact_id: row.get(0).unwrap_or_default(),
+                job_id: row.get(1).unwrap_or_default(),
+                kind: parse_distill_artifact_kind(&kind_str)?,
+                subtype: subtype_str.as_deref().map(parse_distill_artifact_subtype).transpose()?,
+                category: parse_category(&category_str)?,
+                importance: row.get(5).unwrap_or(0.5),
+                text: row.get(6).unwrap_or_default(),
+                tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+                review_status: row.get(8).unwrap_or(None),
+                reviewer_note: row.get(9).unwrap_or(None),
+                reviewed_at: row.get(10).unwrap_or(None),
+            });
+        }
+        Ok(result)
+    }
+
+    /// Get a single governance artifact by ID (scoped by principal via job).
+    pub fn get_governance_artifact(
+        &self,
+        artifact_id: &str,
+        user_id: &str,
+        agent_id: &str,
+    ) -> AppResult<Option<crate::models::DistillArtifact>> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        let mut stmt = conn.prepare(
+            "SELECT da.artifact_id, da.job_id, da.kind, da.subtype, da.category,
+                    da.importance, da.text, da.evidence_json, da.tags_json, da.persistence_json
+             FROM distill_artifacts da
+             JOIN distill_jobs dj ON da.job_id = dj.job_id
+             WHERE da.artifact_id = ?1 AND dj.user_id = ?2 AND dj.agent_id = ?3
+             LIMIT 1",
+        ).map_err(|e| AppError::internal(format!("sqlite prepare error: {e}")))?;
+
+        let mut rows = stmt.query(params![artifact_id, user_id, agent_id])
+            .map_err(|e| AppError::internal(format!("sqlite query error: {e}")))?;
+        if let Some(row) = rows.next().map_err(|e| AppError::internal(format!("sqlite row error: {e}")))? {
+            let kind_str: String = row.get(2).unwrap_or_default();
+            let subtype_str: Option<String> = row.get(3).unwrap_or(None);
+            let category_str: String = row.get(4).unwrap_or_default();
+            let evidence_json: String = row.get(7).unwrap_or_default();
+            let tags_json: String = row.get(8).unwrap_or_default();
+            let persistence_json: Option<String> = row.get(9).unwrap_or(None);
+
+            Ok(Some(crate::models::DistillArtifact {
+                artifact_id: row.get(0).unwrap_or_default(),
+                job_id: row.get(1).unwrap_or_default(),
+                kind: parse_distill_artifact_kind(&kind_str)?,
+                subtype: subtype_str.as_deref().map(parse_distill_artifact_subtype).transpose()?,
+                category: parse_category(&category_str)?,
+                importance: row.get(5).unwrap_or(0.5),
+                text: row.get(6).unwrap_or_default(),
+                evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
+                tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+                persistence: persistence_json.as_deref()
+                    .map(|s| serde_json::from_str(s))
+                    .transpose()
+                    .unwrap_or(None),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Update governance review state.
+    pub fn update_governance_review(
+        &self,
+        artifact_id: &str,
+        user_id: &str,
+        agent_id: &str,
+        review_status: &str,
+        reviewer_note: Option<&str>,
+        reviewed_at: i64,
+    ) -> AppResult<()> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO governance_reviews (
+                artifact_id, user_id, agent_id, review_status, reviewer_note, reviewed_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![artifact_id, user_id, agent_id, review_status, reviewer_note, reviewed_at],
+        ).map_err(|e| AppError::internal(format!("failed to update governance review: {e}")))?;
+        Ok(())
+    }
+
+    /// Insert an admin audit entry.
+    pub fn insert_admin_audit_entry(
+        &self,
+        entry: &crate::admin::dto::AdminAuditEntry,
+    ) -> AppResult<()> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        conn.execute(
+            "INSERT INTO admin_audit_log (
+                id, timestamp, admin_subject, action,
+                target_principal_user_id, target_principal_agent_id,
+                target_resource_kind, target_resource_id,
+                outcome, details_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                &entry.id,
+                entry.timestamp,
+                &entry.admin_subject,
+                &entry.action,
+                &entry.target_principal_user_id,
+                &entry.target_principal_agent_id,
+                &entry.target_resource_kind,
+                &entry.target_resource_id,
+                &entry.outcome,
+                &entry.details_json,
+            ],
+        ).map_err(|e| AppError::internal(format!("failed to insert admin audit entry: {e}")))?;
+        Ok(())
+    }
+
+    /// List admin audit log entries.
+    pub fn list_admin_audit_entries(
+        &self,
+        limit: u64,
+        offset: u64,
+    ) -> AppResult<Vec<crate::admin::dto::AdminAuditEntry>> {
+        let conn = self.open_conn().map_err(AppError::from)?;
+        let limit = limit.min(200);
+        let mut stmt = conn.prepare(
+            "SELECT id, timestamp, admin_subject, action,
+                    target_principal_user_id, target_principal_agent_id,
+                    target_resource_kind, target_resource_id,
+                    outcome, details_json
+             FROM admin_audit_log
+             ORDER BY timestamp DESC
+             LIMIT ?1 OFFSET ?2",
+        ).map_err(|e| AppError::internal(format!("sqlite prepare error: {e}")))?;
+
+        let mut result = Vec::new();
+        let mut rows = stmt.query(params![limit as i64, offset as i64])
+            .map_err(|e| AppError::internal(format!("sqlite query error: {e}")))?;
+        while let Some(row) = rows.next().map_err(|e| AppError::internal(format!("sqlite row error: {e}")))? {
+            result.push(crate::admin::dto::AdminAuditEntry {
+                id: row.get(0).unwrap_or_default(),
+                timestamp: row.get(1).unwrap_or(0),
+                admin_subject: row.get(2).unwrap_or_default(),
+                action: row.get(3).unwrap_or_default(),
+                target_principal_user_id: row.get(4).unwrap_or(None),
+                target_principal_agent_id: row.get(5).unwrap_or(None),
+                target_resource_kind: row.get(6).unwrap_or(None),
+                target_resource_id: row.get(7).unwrap_or(None),
+                outcome: row.get(8).unwrap_or_default(),
+                details_json: row.get(9).unwrap_or(None),
+            });
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn open_conn(&self) -> anyhow::Result<Connection> {
         Ok(Connection::open(&self.sqlite_path)?)
     }
 }
@@ -5343,6 +6460,7 @@ fn distill_artifact_kind_to_str(kind: DistillArtifactKind) -> &'static str {
     match kind {
         DistillArtifactKind::Lesson => "lesson",
         DistillArtifactKind::GovernanceCandidate => "governance-candidate",
+        DistillArtifactKind::MemoryPromotion => "memory-promotion",
     }
 }
 
@@ -5350,6 +6468,26 @@ fn distill_artifact_subtype_to_str(subtype: DistillArtifactSubtype) -> &'static 
     match subtype {
         DistillArtifactSubtype::FollowUpFocus => "follow-up-focus",
         DistillArtifactSubtype::NextTurnGuidance => "next-turn-guidance",
+        DistillArtifactSubtype::StableDecision => "stable-decision",
+        DistillArtifactSubtype::DurablePractice => "durable-practice",
+    }
+}
+
+fn parse_distill_artifact_kind(raw: &str) -> AppResult<DistillArtifactKind> {
+    match raw {
+        "lesson" => Ok(DistillArtifactKind::Lesson),
+        "governance-candidate" => Ok(DistillArtifactKind::GovernanceCandidate),
+        _ => Err(AppError::internal(format!("invalid distill artifact kind: {}", raw))),
+    }
+}
+
+fn parse_distill_artifact_subtype(raw: &str) -> AppResult<DistillArtifactSubtype> {
+    match raw {
+        "follow-up-focus" => Ok(DistillArtifactSubtype::FollowUpFocus),
+        "next-turn-guidance" => Ok(DistillArtifactSubtype::NextTurnGuidance),
+        "stable-decision" => Ok(DistillArtifactSubtype::StableDecision),
+        "durable-practice" => Ok(DistillArtifactSubtype::DurablePractice),
+        _ => Err(AppError::internal(format!("invalid distill artifact subtype: {}", raw))),
     }
 }
 
@@ -5409,6 +6547,15 @@ fn principal_filter(actor: &Actor) -> String {
         escape_sql_literal(&actor.user_id),
         escape_sql_literal(&actor.agent_id)
     )
+}
+
+fn max_optional_i64(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
 }
 
 fn escape_sql_literal(value: &str) -> String {
@@ -6301,7 +7448,7 @@ fn round_score(score: f64) -> f64 {
     (clamp_score(score) * 1_000_000.0).round() / 1_000_000.0
 }
 
-fn now_millis() -> i64 {
+pub(crate) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

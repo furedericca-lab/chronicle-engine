@@ -28,15 +28,15 @@ Goal: Add backend routing, auth, logging, and shared recall-flow refactors neede
 Definition of Done: The backend exposes an admin namespace with real admin auth, real logging initialization, and a cleaned-up recall entry structure without changing runtime-plane semantics.
 
 Tasks:
-- [ ] T021 [Backend] Add backend admin modules and router composition.
+- [x] T021 [Backend] Add backend admin modules and router composition.
   - DoD: `backend/src/admin/*` exists with route/auth/DTO/service scaffolding and `backend/src/lib.rs` cleanly mounts `/admin` and `/admin/api/*`.
-- [ ] T022 [Backend] Wire `auth.admin` and `logging.level` into live runtime behavior.
+- [x] T022 [Backend] Wire `auth.admin` and `logging.level` into live runtime behavior.
   - DoD: admin middleware authenticates with `auth.admin`, backend logging initializes according to `logging.level`, and the admin-shell login bootstrap does not require cookie auth.
-- [ ] T023 [Backend] Add dedicated admin-plane rate limiting and principal parsing seams.
+- [x] T023 [Backend] Add dedicated admin-plane rate limiting and principal parsing seams.
   - DoD: `/admin/api/*` has separate rate limiting plus centralized opaque id parse/validate paths for `principalId` and `transcriptId`.
-- [ ] T024 [Backend] Consolidate duplicate recall handler / pipeline control flow.
+- [x] T024 [Backend] Consolidate duplicate recall handler / pipeline control flow.
   - DoD: generic and behavioral recall paths share more implementation while preserving current request/response semantics and trace behavior, and admin simulation has a no-side-effect execution path.
-- [ ] T025 [QA] Add backend tests for admin-vs-runtime auth separation and static/admin route behavior.
+- [x] T025 [QA] Add backend tests for admin-vs-runtime auth separation and static/admin route behavior.
   - DoD: tests cover rejection of runtime token on admin routes, rejection of admin token on runtime routes where intended, and SPA/static route handling.
 
 Checkpoint: Phase 2 artifacts are merged, verified, and recorded in 5phases-checklist.md before next phase starts.

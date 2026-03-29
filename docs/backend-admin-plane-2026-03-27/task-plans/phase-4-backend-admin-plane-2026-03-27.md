@@ -28,13 +28,13 @@ Goal: Build and integrate the React + TypeScript admin SPA against the new admin
 Definition of Done: The admin UI builds, is served by the backend from `/admin`, and exposes the core operator pages needed for day-one administration.
 
 Tasks:
-- [ ] T061 [Frontend] Scaffold `admin-web/` with Vite, React, TypeScript, TanStack Router, TanStack Query, and table/layout foundations.
+- [x] T061 [Frontend] Scaffold `backend/web/` with Vite, React, TypeScript, TanStack Router, TanStack Query, and table/layout foundations.
   - DoD: the app builds and has route/layout structure for the admin plane, borrowing the management-center interaction model of login shell, persistent sidebar, top status bar, and secondary edit shells.
-- [ ] T062 [Frontend] Implement the core pages.
+- [x] T062 [Frontend] Implement the core pages.
   - DoD: Dashboard, Memories, Behavioral, Recall Lab, Distill Jobs, Transcripts, Governance, Audit Log, and Settings have usable initial views, with Governance review/promote actions and Settings diff-and-save config editing.
-- [ ] T063 [Frontend] Add admin API client and page-level state wiring.
+- [x] T063 [Frontend] Add admin API client and page-level state wiring.
   - DoD: pages consume typed `/admin/api/*` responses rather than in-page schema guessing, and the login shell stores the admin token in `sessionStorage` for same-origin bearer fetches.
-- [ ] T064 [QA] Add frontend smoke/route tests and static-asset integration checks.
+- [x] T064 [QA] Add frontend smoke/route tests and static-asset integration checks.
   - DoD: route smoke tests pass and backend can serve the built SPA shell and assets.
 
 Checkpoint: Phase 4 artifacts are merged, verified, and recorded in 5phases-checklist.md before next phase starts.

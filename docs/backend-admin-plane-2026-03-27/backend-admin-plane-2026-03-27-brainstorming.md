@@ -41,7 +41,7 @@ description: Brainstorming and decision framing for adding a bundled admin plane
 ## Decision
 
 - Build a bundled admin plane inside the existing backend process and image.
-- Add `admin-web/` with React, TypeScript, and Vite-based SPA tooling.
+- Add `backend/web/` with React, TypeScript, and Vite-based SPA tooling.
 - Serve the SPA from `/admin` and static assets from `/admin/assets/*`.
 - Add `/admin/api/*` routes guarded by admin auth middleware and separate audit logging.
 - Preserve `/v1/*` unchanged as the ordinary runtime data plane.

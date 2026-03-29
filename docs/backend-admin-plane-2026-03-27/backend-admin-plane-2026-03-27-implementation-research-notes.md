@@ -109,7 +109,7 @@ description: Implementation research notes for the bundled admin plane, admin au
 ## Selected Design
 
 - Choose Design B.
-- Add `admin-web/` with:
+- Add `backend/web/` with:
   - React
   - TypeScript
   - Vite

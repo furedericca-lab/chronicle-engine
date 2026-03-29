@@ -28,13 +28,13 @@ Goal: Close the scope by integrating the bundled admin UI into build/deploy flow
 Definition of Done: The combined backend + admin UI delivery path is documented, buildable, and verified, and the scope can be archived as a completed implementation record.
 
 Tasks:
-- [ ] T081 [Infra] Update Docker/deploy flow for the bundled admin UI.
-  - DoD: Dockerfile and deploy docs describe and build the combined Rust backend + admin-web artifact in the existing single-container shape.
-- [ ] T082 [Docs] Refresh active runtime/deploy documentation.
+- [x] T081 [Infra] Update Docker/deploy flow for the bundled admin UI.
+  - DoD: Dockerfile and deploy docs describe and build the combined Rust backend + backend/web artifact in the existing single-container shape.
+- [x] T082 [Docs] Refresh active runtime/deploy documentation.
   - DoD: README/deploy/runtime docs explain the admin plane, route split, auth model, and deployment assumptions accurately.
-- [ ] T083 [QA] Run full verification gates.
+- [x] T083 [QA] Run full verification gates.
   - DoD: backend tests, frontend tests, production builds, Docker build, doc scans, and `git diff --check` all pass or are explicitly triaged.
-- [ ] T084 [Security] Verify final separation and audit posture.
+- [x] T084 [Security] Verify final separation and audit posture.
   - DoD: admin-vs-runtime auth boundaries, principal-scoped behavior, and audit-event coverage are explicitly verified before closeout.
 
 Checkpoint: Phase 5 artifacts are merged, verified, and recorded in 5phases-checklist.md before next phase starts.
