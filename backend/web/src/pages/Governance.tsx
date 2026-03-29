@@ -74,12 +74,12 @@ export function Governance() {
                 {data.items.map((item: any) => (
                   <tr key={item.artifactId}>
                     <td title={item.artifactId}>{item.artifactId.slice(0, 8)}...</td>
-                    <td>{item.artifactKind} - {item.artifactSubtype}</td>
+                    <td>{item.kind}{item.subtype ? ` - ${item.subtype}` : ''}</td>
                     <td>{item.category}</td>
-                    <td>{item.contentPayload.content?.substring(0, 60)}...</td>
+                    <td>{item.text?.substring(0, 60)}...</td>
                     <td>
                       <span style={{ padding: '4px 8px', borderRadius: '4px', background: item.reviewStatus === 'approved' ? 'green' : item.reviewStatus === 'rejected' ? 'red' : 'rgba(255,255,255,0.1)' }}>
-                        {item.reviewStatus}
+                        {item.reviewStatus || 'pending'}
                       </span>
                     </td>
                     <td style={{ display: 'flex', gap: '8px' }}>

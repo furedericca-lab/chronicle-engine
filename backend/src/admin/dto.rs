@@ -269,7 +269,7 @@ pub struct AdminGovernanceListResponse {
     pub items: Vec<AdminGovernanceArtifact>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminGovernanceReviewRequest {
     pub review_status: String,
@@ -285,7 +285,7 @@ pub struct AdminGovernanceReviewResponse {
     pub reviewed_at: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminGovernancePromoteRequest {
     #[serde(default)]
@@ -337,6 +337,8 @@ pub struct AdminAuditLogResponse {
 #[serde(rename_all = "camelCase")]
 pub struct AdminSettingsResponse {
     pub config: serde_json::Value,
+    pub config_toml: String,
+    pub editable: bool,
 }
 
 #[derive(Debug, Deserialize)]

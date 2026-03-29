@@ -175,10 +175,12 @@ description: API, auth, and deployment contracts for the bundled backend admin p
 - Settings routes must support online config editing of the backend TOML source of truth.
 - `PUT /admin/api/settings/runtime-config` must:
   - validate the proposed config before writing
-  - return a structured diff/summary
   - write atomically
   - emit audit entries
+  - return the normalized parsed config plus editable TOML text
+  - indicate that the save was persisted successfully
   - indicate whether a restart is required for the change to take effect
+  - in the current implementation, treat restart as required after save rather than claiming hot-apply
 
 ### Distill and transcript DTOs
 

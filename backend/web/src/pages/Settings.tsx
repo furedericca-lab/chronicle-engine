@@ -14,10 +14,8 @@ export function Settings() {
   const [saveStatus, setSaveStatus] = useState<{message: string; isError: boolean} | null>(null)
 
   useEffect(() => {
-    // Basic mock mapping of config struct to a readable block for the admin
-    if (data?.config) {
-      const configStr = JSON.stringify(data.config, null, 2)
-      setLocalToml(configStr) 
+    if (data?.configToml) {
+      setLocalToml(data.configToml)
     }
   }, [data])
 
@@ -35,19 +33,25 @@ export function Settings() {
   return (
     <div>
       <h1 className="page-title">Settings</h1>
-      <p className="page-description">System configuration and tuning (Requires Backend Restart after save).</p>
+      <p className="page-description">System configuration and tuning. Saved changes persist to the backend TOML source and still require a restart to fully apply.</p>
       
       <div className="card" style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', height: '60vh' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <h3>Editor (JSON to TOML proxy)</h3>
+          <h3>Runtime Config (TOML)</h3>
           <button 
             className="btn btn-primary" 
             onClick={() => mutation.mutate(localToml)}
-            disabled={mutation.isPending}
+            disabled={mutation.isPending || data?.editable === false}
           >
             <Save size={16} style={{ marginRight: '8px' }} /> Save Changes
           </button>
         </div>
+
+        {data?.editable === false && (
+          <div style={{ padding: '12px', marginBottom: '16px', borderRadius: '4px', backgroundColor: 'rgba(255,165,0,0.12)', color: '#f59e0b' }}>
+            Runtime config editing is disabled for this backend instance because it was started without a writable config path.
+          </div>
+        )}
         
         {saveStatus && (
           <div style={{ padding: '12px', marginBottom: '16px', borderRadius: '4px', backgroundColor: saveStatus.isError ? 'rgba(255,0,0,0.1)' : 'rgba(0,255,0,0.1)', color: saveStatus.isError ? '#ff4d4f' : '#4ade80' }}>
@@ -63,6 +67,7 @@ export function Settings() {
             style={{ flex: 1, fontFamily: 'monospace', resize: 'none', padding: '16px' }}
             value={localToml}
             onChange={(e) => setLocalToml(e.target.value)}
+            readOnly={data?.editable === false}
             spellCheck={false}
           />
         )}

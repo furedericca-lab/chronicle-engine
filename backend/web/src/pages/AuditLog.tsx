@@ -34,10 +34,10 @@ export function AuditLog() {
                     <td title={log.id}>{log.id.slice(0,8)}...</td>
                     <td>{new Date(log.timestamp).toLocaleString()}</td>
                     <td>{log.action}</td>
-                    <td>{log.subject.split(':')[0]}...</td>
-                    <td>{log.targetType || '-'}</td>
-                    <td>{log.targetId ? log.targetId.slice(0,8) + '...' : '-'}</td>
-                    <td>{log.status}</td>
+                    <td>{log.adminSubject}</td>
+                    <td>{log.targetResourceKind || '-'}</td>
+                    <td>{log.targetResourceId ? log.targetResourceId.slice(0,8) + '...' : '-'}</td>
+                    <td>{log.outcome}</td>
                   </tr>
                 ))}
                 {data.items.length === 0 && (

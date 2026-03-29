@@ -4,7 +4,7 @@
 
 [server]
 bind = "0.0.0.0:8080"
-admin_assets_path = "/usr/local/bin/admin-web/dist"
+admin_assets_path = "/usr/local/bin/web/dist"
 
 [storage]
 lancedb_path = "/var/lib/chronicle-engine-backend/lancedb"

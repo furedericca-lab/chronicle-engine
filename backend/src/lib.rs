@@ -30,7 +30,7 @@ use axum::{
     Json, Router,
 };
 use serde_json::json;
-use std::future::Future;
+use std::{future::Future, path::PathBuf};
 
 const AUTH_USER_ID_HEADER: &str = "x-auth-user-id";
 const AUTH_AGENT_ID_HEADER: &str = "x-auth-agent-id";
@@ -41,8 +41,15 @@ struct RuntimeAuthContext {
 }
 
 pub fn build_app(config: AppConfig) -> anyhow::Result<Router> {
+    build_app_with_config_path(config, None)
+}
+
+pub fn build_app_with_config_path(
+    config: AppConfig,
+    config_path: Option<PathBuf>,
+) -> anyhow::Result<Router> {
     config.validate()?;
-    let state = AppState::new(config.clone())?;
+    let state = AppState::new_with_config_path(config.clone(), config_path)?;
 
     let data_routes = Router::new()
         .route("/recall/generic", post(recall_generic))
@@ -98,41 +105,41 @@ pub fn build_app(config: AppConfig) -> anyhow::Result<Router> {
                 .delete(admin::routes::delete_memory),
         )
         .route(
-            "/principals/{principalId}/distill_jobs",
+            "/principals/{principalId}/distill/jobs",
             get(admin::routes::list_distill_jobs)
         )
         .route(
-            "/principals/{principalId}/distill_jobs/{jobId}",
+            "/principals/{principalId}/distill/jobs/{jobId}",
             get(admin::routes::get_distill_job)
         )
         .route(
-            "/principals/{principalId}/transcripts",
+            "/principals/{principalId}/session-transcripts",
             get(admin::routes::list_transcripts)
         )
         .route(
-            "/principals/{principalId}/transcripts/{transcriptId}",
+            "/principals/{principalId}/session-transcripts/{transcriptId}",
             get(admin::routes::get_transcript)
         )
         .route(
-            "/principals/{principalId}/governance",
+            "/principals/{principalId}/governance/artifacts",
             get(admin::routes::list_governance_artifacts)
         )
         .route(
-            "/principals/{principalId}/governance/{artifactId}/review",
+            "/principals/{principalId}/governance/artifacts/{artifactId}/review",
             post(admin::routes::review_governance_artifact)
         )
         .route(
-            "/principals/{principalId}/governance/{artifactId}/promote",
+            "/principals/{principalId}/governance/artifacts/{artifactId}/promote",
             post(admin::routes::promote_governance_artifact)
         )
         .route(
-            "/audit",
+            "/audit-log",
             get(admin::routes::get_audit_log)
         )
         .route(
-            "/settings",
+            "/settings/runtime-config",
             get(admin::routes::get_settings)
-                .post(admin::routes::update_settings)
+                .put(admin::routes::update_settings)
         )
         .fallback(|| async { (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))) })
         .with_state(state.clone())
@@ -429,7 +436,8 @@ pub async fn runtime_auth_middleware(
 ) -> AppResult<Response> {
     require_request_id(request.headers())?;
     let token = bearer_token(request.headers())?;
-    if token != state.config.auth.runtime.token {
+    let runtime_token = state.config.read().auth.runtime.token.clone();
+    if token != runtime_token {
         return Err(AppError::unauthorized("invalid runtime bearer token"));
     }
 

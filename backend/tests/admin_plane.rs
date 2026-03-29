@@ -4,7 +4,7 @@ use axum::{
     Router,
 };
 use chronicle_engine_rs::{
-    build_app,
+    build_app_with_config_path,
     config::{
         AppConfig, AuthConfig, LoggingConfig, ProvidersConfig, RetrievalConfig, ServerConfig,
         StorageConfig, TokenConfig,
@@ -51,7 +51,9 @@ fn setup_app() -> Router {
     ));
     std::fs::create_dir_all(&tmp).expect("temp test path should be created");
     let cfg = make_config(&tmp);
-    build_app(cfg).expect("app should build")
+    let config_path = tmp.join("backend.toml");
+    cfg.save(&config_path).expect("test config should be written");
+    build_app_with_config_path(cfg, Some(config_path)).expect("app should build")
 }
 
 async fn request_json(
@@ -120,12 +122,11 @@ async fn test_admin_auth_separation() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(
+    assert!(
         body["error"]["message"]
             .as_str()
             .unwrap_or("")
-            .contains("runtime bearer token"),
-        true
+            .contains("runtime bearer token")
     );
 
     // 3. Admin token on admin API should succeed
@@ -141,7 +142,7 @@ async fn test_admin_auth_separation() {
     assert_eq!(body["plane"], "admin");
 
     // 4. Admin token on runtime API should fail (Unauthorized)
-    let (status, _) = request_json(
+    let (_status, _) = request_json(
         &app,
         Method::GET,
         "/v1/health",
@@ -225,7 +226,7 @@ async fn test_admin_principal_apis_and_recall() {
     });
 
     // We must pass the correct routing headers for runtime
-    let mut builder = Request::builder()
+    let builder = Request::builder()
         .method(Method::POST)
         .uri("/v1/memories/store")
         .header("x-request-id", "test-req-store")
@@ -283,10 +284,9 @@ async fn test_admin_principal_apis_and_recall() {
     assert_eq!(body["principalUserId"], "admin_test_user");
     assert_eq!(body["principalAgentId"], "admin_test_agent");
     
-    let results = body["results"].as_array().unwrap();
+    let _results = body["results"].as_array().unwrap();
     // Assuming the test without providers might not actually recall it, 
     // but the request should succeed and return an array (either empty or with items)
-    assert!(results.len() >= 0);
     assert!(body.get("trace").is_some(), "trace should be included");
     assert!(body.get("appliedFilters").is_some());
 
@@ -300,10 +300,10 @@ async fn test_admin_principal_apis_and_recall() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(body["_raw"].as_str().unwrap_or("").is_empty(), true); // Axum default 404 is empty string usually, but it's not the SPA html
+    assert!(body["_raw"].as_str().unwrap_or("").is_empty()); // Axum default 404 is empty string usually, but it's not the SPA html
     
     // Check SPA shell fallback for /admin
-    let mut builder = Request::builder().method(Method::GET).uri("/admin");
+    let builder = Request::builder().method(Method::GET).uri("/admin");
     let req = builder.body(Body::empty()).unwrap();
     let response = app.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -323,7 +323,7 @@ async fn phase_3_admin_apis_are_accessible_and_return_empty_or_defaults() {
     let (status, list) = request_json(
         &app,
         Method::GET,
-        &format!("/admin/api/principals/{principal_id}/distill_jobs"),
+        &format!("/admin/api/principals/{principal_id}/distill/jobs"),
         None,
         Some(ADMIN_TOKEN),
     )
@@ -335,7 +335,7 @@ async fn phase_3_admin_apis_are_accessible_and_return_empty_or_defaults() {
     let (status, list) = request_json(
         &app,
         Method::GET,
-        &format!("/admin/api/principals/{principal_id}/transcripts"),
+        &format!("/admin/api/principals/{principal_id}/session-transcripts"),
         None,
         Some(ADMIN_TOKEN),
     )
@@ -347,7 +347,7 @@ async fn phase_3_admin_apis_are_accessible_and_return_empty_or_defaults() {
     let (status, list) = request_json(
         &app,
         Method::GET,
-        &format!("/admin/api/principals/{principal_id}/governance"),
+        &format!("/admin/api/principals/{principal_id}/governance/artifacts"),
         None,
         Some(ADMIN_TOKEN),
     )
@@ -359,7 +359,7 @@ async fn phase_3_admin_apis_are_accessible_and_return_empty_or_defaults() {
     let (status, log) = request_json(
         &app,
         Method::GET,
-        "/admin/api/audit?limit=10",
+        "/admin/api/audit-log?limit=10",
         None,
         Some(ADMIN_TOKEN),
     )
@@ -371,7 +371,7 @@ async fn phase_3_admin_apis_are_accessible_and_return_empty_or_defaults() {
     let (status, settings) = request_json(
         &app,
         Method::GET,
-        "/admin/api/settings",
+        "/admin/api/settings/runtime-config",
         None,
         Some(ADMIN_TOKEN),
     )
@@ -387,7 +387,7 @@ async fn phase_3_admin_apis_are_accessible_and_return_empty_or_defaults() {
     let (status, _) = request_json(
         &app,
         Method::GET,
-        &format!("/admin/api/principals/{principal_id}/distill_jobs/nonexistent-job"),
+        &format!("/admin/api/principals/{principal_id}/distill/jobs/nonexistent-job"),
         None,
         Some(ADMIN_TOKEN),
     )
@@ -397,7 +397,7 @@ async fn phase_3_admin_apis_are_accessible_and_return_empty_or_defaults() {
     let (status, _) = request_json(
         &app,
         Method::GET,
-        &format!("/admin/api/principals/{principal_id}/transcripts/nonexistent-transcript"),
+        &format!("/admin/api/principals/{principal_id}/session-transcripts/nonexistent-transcript"),
         None,
         Some(ADMIN_TOKEN),
     )
@@ -408,12 +408,57 @@ async fn phase_3_admin_apis_are_accessible_and_return_empty_or_defaults() {
     let (status, _) = request_json(
         &app,
         Method::GET,
-        &format!("/admin/api/principals/{principal_id}/transcripts/{valid_transcript_id}"),
+        &format!("/admin/api/principals/{principal_id}/session-transcripts/{valid_transcript_id}"),
         None,
         Some(ADMIN_TOKEN),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn settings_runtime_config_persists_valid_toml() {
+    let app = setup_app();
+
+    let (status, settings) = request_json(
+        &app,
+        Method::GET,
+        "/admin/api/settings/runtime-config",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let config_toml = settings["configToml"]
+        .as_str()
+        .expect("settings response should include configToml");
+    let updated_toml = config_toml.replace("level = \"error\"", "level = \"debug\"");
+
+    let builder = Request::builder()
+        .method(Method::PUT)
+        .uri("/admin/api/settings/runtime-config")
+        .header("x-request-id", "settings-update")
+        .header(header::AUTHORIZATION, format!("Bearer {}", ADMIN_TOKEN))
+        .header(header::CONTENT_TYPE, "application/json");
+    let request = builder
+        .body(Body::from(json!({ "configToml": updated_toml }).to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["applied"], true);
+
+    let (status, settings) = request_json(
+        &app,
+        Method::GET,
+        "/admin/api/settings/runtime-config",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(settings["config"]["logging"]["level"], "debug");
 }
 
 fn encode_transcript_id(session_key: &str, session_id: &str) -> String {

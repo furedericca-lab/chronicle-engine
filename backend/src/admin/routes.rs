@@ -265,7 +265,7 @@ pub async fn delete_memory(
 
 // ─── Phase 3 Admin Handlers ───
 
-/// GET /admin/api/principals/{principalId}/distill_jobs
+/// GET /admin/api/principals/{principalId}/distill/jobs
 pub async fn list_distill_jobs(
     State(state): State<AppState>,
     Path(principal_id): Path<String>,
@@ -275,7 +275,7 @@ pub async fn list_distill_jobs(
     Ok(Json(super::dto::AdminDistillJobListResponse { items }))
 }
 
-/// GET /admin/api/principals/{principalId}/distill_jobs/{jobId}
+/// GET /admin/api/principals/{principalId}/distill/jobs/{jobId}
 pub async fn get_distill_job(
     State(state): State<AppState>,
     Path((principal_id, job_id)): Path<(String, String)>,
@@ -287,7 +287,7 @@ pub async fn get_distill_job(
     Ok(Json(detail))
 }
 
-/// GET /admin/api/principals/{principalId}/transcripts
+/// GET /admin/api/principals/{principalId}/session-transcripts
 pub async fn list_transcripts(
     State(state): State<AppState>,
     Path(principal_id): Path<String>,
@@ -297,7 +297,7 @@ pub async fn list_transcripts(
     Ok(Json(super::dto::AdminTranscriptListResponse { items }))
 }
 
-/// GET /admin/api/principals/{principalId}/transcripts/{transcriptId}
+/// GET /admin/api/principals/{principalId}/session-transcripts/{transcriptId}
 pub async fn get_transcript(
     State(state): State<AppState>,
     Path((principal_id, transcript_id)): Path<(String, String)>,
@@ -310,7 +310,7 @@ pub async fn get_transcript(
     Ok(Json(detail))
 }
 
-/// GET /admin/api/principals/{principalId}/governance
+/// GET /admin/api/principals/{principalId}/governance/artifacts
 pub async fn list_governance_artifacts(
     State(state): State<AppState>,
     Path(principal_id): Path<String>,
@@ -320,42 +320,68 @@ pub async fn list_governance_artifacts(
     Ok(Json(super::dto::AdminGovernanceListResponse { items }))
 }
 
-/// POST /admin/api/principals/{principalId}/governance/{artifactId}/review
+/// POST /admin/api/principals/{principalId}/governance/artifacts/{artifactId}/review
 pub async fn review_governance_artifact(
     State(state): State<AppState>,
     axum::Extension(auth_ctx): axum::Extension<super::auth::AdminAuthContext>,
     Path((principal_id, artifact_id)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<super::dto::AdminGovernanceReviewRequest>,
 ) -> AppResult<Json<super::dto::AdminGovernanceReviewResponse>> {
     let principal = decode_principal_id(&principal_id)?;
     let admin_subject = format!("admin:{}", auth_ctx.token_fingerprint);
-    let resp = state.admin_review_governance_artifact(
+    let idempotency_key = crate::require_idempotency_key(&headers)?.to_string();
+    let request_fingerprint = crate::fingerprint_request(&req)?;
+    let resp = crate::run_idempotent_operation(
+        &state,
         &principal,
-        &artifact_id,
-        &req.review_status,
-        req.reviewer_note.as_deref(),
-        &admin_subject,
-    )?;
+        "POST /admin/api/principals/governance/artifacts/review",
+        &idempotency_key,
+        &request_fingerprint,
+        async {
+            state.admin_review_governance_artifact(
+                &principal,
+                &artifact_id,
+                &req.review_status,
+                req.reviewer_note.as_deref(),
+                &admin_subject,
+            )
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
-/// POST /admin/api/principals/{principalId}/governance/{artifactId}/promote
+/// POST /admin/api/principals/{principalId}/governance/artifacts/{artifactId}/promote
 pub async fn promote_governance_artifact(
     State(state): State<AppState>,
     axum::Extension(auth_ctx): axum::Extension<super::auth::AdminAuthContext>,
     Path((principal_id, artifact_id)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<super::dto::AdminGovernancePromoteRequest>,
 ) -> AppResult<Json<super::dto::AdminGovernancePromoteResponse>> {
     let principal = decode_principal_id(&principal_id)?;
     let admin_subject = format!("admin:{}", auth_ctx.token_fingerprint);
-    let resp = state
-        .admin_promote_governance_artifact(
-            &principal,
-            &artifact_id,
-            req.reviewer_note.as_deref(),
-            &admin_subject,
-        )
-        .await?;
+    let idempotency_key = crate::require_idempotency_key(&headers)?.to_string();
+    let request_fingerprint = crate::fingerprint_request(&req)?;
+    let resp = crate::run_idempotent_operation(
+        &state,
+        &principal,
+        "POST /admin/api/principals/governance/artifacts/promote",
+        &idempotency_key,
+        &request_fingerprint,
+        async {
+            state
+                .admin_promote_governance_artifact(
+                    &principal,
+                    &artifact_id,
+                    req.reviewer_note.as_deref(),
+                    &admin_subject,
+                )
+                .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -367,55 +393,39 @@ pub struct AuditLogQuery {
     pub offset: Option<u64>,
 }
 
-/// GET /admin/api/audit
+/// GET /admin/api/audit-log
 pub async fn get_audit_log(
     State(state): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<AuditLogQuery>,
 ) -> AppResult<Json<super::dto::AdminAuditLogResponse>> {
-    let limit = query.limit.unwrap_or(50).max(1).min(200);
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0);
     let items = state.admin_get_audit_log(limit, offset)?;
     Ok(Json(super::dto::AdminAuditLogResponse { items }))
 }
 
-/// GET /admin/api/settings
+/// GET /admin/api/settings/runtime-config
 pub async fn get_settings(State(state): State<AppState>) -> AppResult<Json<super::dto::AdminSettingsResponse>> {
     let config_val = state.admin_get_settings()?;
-    Ok(Json(super::dto::AdminSettingsResponse { config: config_val }))
+    let config_toml = state.admin_get_settings_toml()?;
+    Ok(Json(super::dto::AdminSettingsResponse {
+        config: config_val,
+        config_toml,
+        editable: state.config_path.is_some(),
+    }))
 }
 
-/// POST /admin/api/settings
+/// PUT /admin/api/settings/runtime-config
 pub async fn update_settings(
     State(state): State<AppState>,
     axum::Extension(auth_ctx): axum::Extension<super::auth::AdminAuthContext>,
     Json(req): Json<super::dto::AdminSettingsUpdateRequest>,
 ) -> AppResult<Json<super::dto::AdminSettingsUpdateResponse>> {
     let admin_subject = format!("admin:{}", auth_ctx.token_fingerprint);
-    
-    // Parse new TOML config to see if it's mostly valid.
-    let _new_config: crate::config::AppConfig = toml::from_str(&req.config_toml)
+
+    let new_config: crate::config::AppConfig = toml::from_str(&req.config_toml)
         .map_err(|e| AppError::invalid_request(format!("invalid TOML: {e}")))?;
-    
-    // We do NOT support hot-reloading in the current implementation.
-    // So we record an audit event and pretend it's updated, requiring a restart.
-    
-    let toml_val = serde_json::to_string(&serde_json::json!({"action": "settings update requested"})).unwrap_or_default();
-    
-    let _ = state.admin_emit_audit(
-        &admin_subject,
-        "settings.update",
-        None,
-        Some("config.toml"),
-        None,
-        "success",
-        Some(&toml_val),
-    );
-    
-    // (In a real implementation, we would call new_config.save() and somehow sync to state.config)
-    
-    Ok(Json(super::dto::AdminSettingsUpdateResponse {
-        applied: false,
-        restart_required: true,
-        summary: "Config update requested; restart the process to apply changes.".to_string(),
-    }))
+
+    let response = state.admin_update_settings(new_config, &admin_subject)?;
+    Ok(Json(response))
 }

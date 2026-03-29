@@ -52,8 +52,9 @@ export function DistillJobs() {
                   <tr>
                     <th>Job ID</th>
                     <th>Status</th>
+                    <th>Mode</th>
                     <th>Created At</th>
-                    <th>Completed At</th>
+                    <th>Updated At</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -61,13 +62,14 @@ export function DistillJobs() {
                     <tr key={j.jobId} className="interactive">
                       <td>{j.jobId}</td>
                       <td>{j.status}</td>
+                      <td>{j.mode}</td>
                       <td>{new Date(j.createdAt).toLocaleString()}</td>
-                      <td>{j.completedAt ? new Date(j.completedAt).toLocaleString() : '-'}</td>
+                      <td>{new Date(j.updatedAt).toLocaleString()}</td>
                     </tr>
                   ))}
                   {jobsData.items.length === 0 && (
                     <tr>
-                      <td colSpan={4} style={{ textAlign: 'center' }}>No jobs found.</td>
+                      <td colSpan={5} style={{ textAlign: 'center' }}>No jobs found.</td>
                     </tr>
                   )}
                 </tbody>

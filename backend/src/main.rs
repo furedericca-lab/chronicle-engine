@@ -1,5 +1,5 @@
 use clap::Parser;
-use chronicle_engine_rs::{build_app, config::AppConfig, init_logging};
+use chronicle_engine_rs::{build_app_with_config_path, config::AppConfig, init_logging};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     init_logging(&config.logging.level);
 
     let bind = config.server.bind.clone();
-    let app = build_app(config)?;
+    let app = build_app_with_config_path(config, Some(args.config.clone()))?;
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("chronicle-engine-rs listening on {bind}");

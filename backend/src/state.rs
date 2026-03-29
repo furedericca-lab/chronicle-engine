@@ -41,6 +41,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use parking_lot::RwLock;
 use uuid::Uuid;
 
 const MEMORY_TABLE_NAME: &str = "memories_v1";
@@ -64,7 +65,8 @@ pub struct AdminPrincipalStats {
 
 #[derive(Clone)]
 pub struct AppState {
-    pub config: AppConfig,
+    pub config: Arc<RwLock<AppConfig>>,
+    pub config_path: Option<PathBuf>,
     pub memory_repo: Arc<LanceMemoryRepo>,
     pub job_store: JobStore,
     pub idempotency_store: IdempotencyStore,
@@ -72,6 +74,10 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: AppConfig) -> anyhow::Result<Self> {
+        Self::new_with_config_path(config, None)
+    }
+
+    pub fn new_with_config_path(config: AppConfig, config_path: Option<PathBuf>) -> anyhow::Result<Self> {
         let job_store = JobStore::new(config.storage.sqlite_path.clone())?;
         let idempotency_store = IdempotencyStore::new(config.storage.sqlite_path.clone())?;
         let memory_repo = Arc::new(LanceMemoryRepo::new(
@@ -79,7 +85,8 @@ impl AppState {
             &config,
         )?);
         Ok(Self {
-            config,
+            config: Arc::new(RwLock::new(config)),
+            config_path,
             memory_repo,
             job_store,
             idempotency_store,
@@ -651,7 +658,8 @@ impl AppState {
     /// Read the current runtime config as JSON.
     pub fn admin_get_settings(&self) -> AppResult<serde_json::Value> {
         // Return a sanitized view of the config (redact tokens).
-        let mut config = serde_json::to_value(&self.config)
+        let config_guard = self.config.read();
+        let mut config = serde_json::to_value(&*config_guard)
             .map_err(|e| AppError::internal(format!("failed to serialize config: {e}")))?;
         // Redact sensitive fields.
         if let Some(auth) = config.get_mut("auth") {
@@ -685,12 +693,60 @@ impl AppState {
         Ok(config)
     }
 
+    pub fn admin_get_settings_toml(&self) -> AppResult<String> {
+        toml::to_string_pretty(&*self.config.read())
+            .map_err(|e| AppError::internal(format!("failed to serialize config TOML: {e}")))
+    }
+
+    pub fn admin_update_settings(
+        &self,
+        new_config: AppConfig,
+        admin_subject: &str,
+    ) -> AppResult<crate::admin::dto::AdminSettingsUpdateResponse> {
+        let Some(config_path) = self.config_path.as_ref() else {
+            return Err(AppError::forbidden(
+                "runtime-config editing is unavailable because the backend was started without a writable config path",
+            ));
+        };
+
+        new_config
+            .save_atomically(config_path)
+            .map_err(|e| AppError::internal(format!("failed to persist config update: {e}")))?;
+        *self.config.write() = new_config;
+
+        let details_json = serde_json::json!({
+            "configPath": config_path.display().to_string(),
+            "restartRequired": true
+        })
+        .to_string();
+
+        self.admin_emit_audit(
+            admin_subject,
+            "settings.update",
+            None,
+            Some("runtime-config"),
+            Some(&config_path.display().to_string()),
+            "success",
+            Some(&details_json),
+        )?;
+
+        Ok(crate::admin::dto::AdminSettingsUpdateResponse {
+            applied: true,
+            restart_required: true,
+            summary: format!(
+                "Config saved to {}; restart the backend process to apply all changes.",
+                config_path.display()
+            ),
+        })
+    }
+
     /// Get audit log entries.
     pub fn admin_get_audit_log(&self, limit: u64, offset: u64) -> AppResult<Vec<crate::admin::dto::AdminAuditEntry>> {
         self.job_store.list_admin_audit_entries(limit, offset)
     }
 
     /// Emit an audit entry. Best effort; logged but not failing the outer operation.
+    #[allow(clippy::too_many_arguments)]
     pub fn admin_emit_audit(
         &self,
         admin_subject: &str,
@@ -4551,7 +4607,7 @@ impl JobStore {
                 evidence: serde_json::from_str(&evidence_json_str).unwrap_or_default(),
                 tags: serde_json::from_str(&tags_json_str).unwrap_or_default(),
                 persistence: persistence_json_str.as_deref()
-                    .map(|s| serde_json::from_str(s))
+                    .map(serde_json::from_str)
                     .transpose()
                     .unwrap_or(None),
             });
@@ -4732,7 +4788,7 @@ impl JobStore {
                 evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
                 tags: serde_json::from_str(&tags_json).unwrap_or_default(),
                 persistence: persistence_json.as_deref()
-                    .map(|s| serde_json::from_str(s))
+                    .map(serde_json::from_str)
                     .transpose()
                     .unwrap_or(None),
             }))

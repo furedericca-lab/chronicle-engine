@@ -32,7 +32,7 @@ RUN apt-get update \
  && chown -R chroniclebackend:chroniclebackend /etc/chronicle-engine-backend /var/lib/chronicle-engine-backend
 
 COPY --from=build /work/backend/target/release/chronicle-engine-rs /usr/local/bin/chronicle-engine-rs
-COPY --from=frontend-build /app/dist /usr/local/bin/admin-web/dist
+COPY --from=frontend-build /app/dist /usr/local/bin/web/dist
 
 USER chroniclebackend:chroniclebackend
 EXPOSE 8080

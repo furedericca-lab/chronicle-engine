@@ -1,5 +1,11 @@
 const API_BASE = '/admin/api'
 
+function idempotencyKey() {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `admin-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
 export async function fetchWithAuth(url: string, options: RequestInit = {}) {
   const token = sessionStorage.getItem('adminToken')
   const headers = new Headers(options.headers)
@@ -41,43 +47,45 @@ export const deleteMemory = (principalId: string, memoryId: string) =>
 
 // -- Distill Jobs
 export const listDistillJobs = (principalId: string) => 
-  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/distill_jobs`)
+  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/distill/jobs`)
 
 export const getDistillJob = (principalId: string, jobId: string) =>
-  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/distill_jobs/${encodeURIComponent(jobId)}`)
+  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/distill/jobs/${encodeURIComponent(jobId)}`)
 
 // -- Transcripts
 export const listTranscripts = (principalId: string) => 
-  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/transcripts`)
+  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/session-transcripts`)
 
 export const getTranscript = (principalId: string, transcriptId: string) =>
-  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/transcripts/${encodeURIComponent(transcriptId)}`)
+  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/session-transcripts/${encodeURIComponent(transcriptId)}`)
 
 // -- Governance
 export const listGovernanceArtifacts = (principalId: string) => 
-  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/governance`)
+  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/governance/artifacts`)
 
 export const reviewGovernanceVariant = (principalId: string, artifactId: string, status: string, note?: string) =>
-  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/governance/${encodeURIComponent(artifactId)}/review`, {
+  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/governance/artifacts/${encodeURIComponent(artifactId)}/review`, {
     method: 'POST',
-    body: JSON.stringify({ review_status: status, reviewer_note: note }),
+    headers: { 'Idempotency-Key': idempotencyKey() },
+    body: JSON.stringify({ reviewStatus: status, reviewerNote: note }),
   })
 
 export const promoteGovernanceVariant = (principalId: string, artifactId: string, note?: string) =>
-  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/governance/${encodeURIComponent(artifactId)}/promote`, {
+  fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/governance/artifacts/${encodeURIComponent(artifactId)}/promote`, {
     method: 'POST',
-    body: JSON.stringify({ reviewer_note: note }),
+    headers: { 'Idempotency-Key': idempotencyKey() },
+    body: JSON.stringify({ reviewerNote: note }),
   })
 
 // -- Recall Simulate
 export const recallSimulate = (principalId: string, query: string, mode: string) =>
   fetchWithAuth(`/principals/${encodeURIComponent(principalId)}/recall/simulate`, {
     method: 'POST',
-    body: JSON.stringify({ query, mode_override: mode }),
+    body: JSON.stringify({ query, mode }),
   })
 
 // -- Audit & Settings
-export const getAuditLog = () => fetchWithAuth('/audit?limit=200')
-export const getSettings = () => fetchWithAuth('/settings')
+export const getAuditLog = () => fetchWithAuth('/audit-log?limit=200')
+export const getSettings = () => fetchWithAuth('/settings/runtime-config')
 export const updateSettings = (configToml: string) => 
-  fetchWithAuth('/settings', { method: 'POST', body: JSON.stringify({ config_toml: configToml }) })
+  fetchWithAuth('/settings/runtime-config', { method: 'PUT', body: JSON.stringify({ configToml }) })

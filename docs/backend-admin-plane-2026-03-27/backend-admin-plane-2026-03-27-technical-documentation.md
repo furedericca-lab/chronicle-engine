@@ -269,7 +269,8 @@ The admin plane is explicitly not a second authority. It is a new operations sur
   - raw TOML review/edit for advanced cases
   - explicit diff preview before save
 - Config writes validate against backend config parsing before file replacement.
-- The backend returns whether the saved change is hot-applied or restart-required.
+- The current implementation writes the TOML file atomically, refreshes the backend's in-memory config view, and returns the normalized config plus editable TOML text.
+- The current implementation still treats restart as required after save; the page must not imply that config edits are hot-applied end-to-end.
 - Unsafe config writes must fail closed without partially mutating the file on disk.
 
 ## Security and Reliability

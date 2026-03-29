@@ -12,7 +12,7 @@ use super::rate_limit::AdminRateLimiter;
 /// Extracted admin auth context attached to each authenticated admin request.
 #[derive(Clone, Debug)]
 pub struct AdminAuthContext {
-    /// SHA-256 fingerprint (hex, first 16 chars) of the admin token.
+    /// Stable short hex fingerprint of the admin token used for audit identity.
     pub token_fingerprint: String,
 }
 

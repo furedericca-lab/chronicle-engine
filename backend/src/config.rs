@@ -344,6 +344,28 @@ impl AppConfig {
         Ok(())
     }
 
+    pub fn save_atomically(&self, path: &Path) -> Result<()> {
+        self.validate().context("refusing to save invalid config")?;
+        let toml_str = toml::to_string_pretty(self)
+            .context("failed to serialize config to TOML")?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create config parent directory {}", parent.display())
+            })?;
+        }
+        let tmp_path = path.with_extension("toml.tmp");
+        fs::write(&tmp_path, toml_str)
+            .with_context(|| format!("failed to write temp config to {}", tmp_path.display()))?;
+        fs::rename(&tmp_path, path).with_context(|| {
+            format!(
+                "failed to atomically replace config {} with temp {}",
+                path.display(),
+                tmp_path.display()
+            )
+        })?;
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.server.bind.trim().is_empty() {
             anyhow::bail!("server.bind cannot be empty");

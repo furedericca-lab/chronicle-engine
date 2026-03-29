@@ -120,7 +120,7 @@ description: Execution and verification checklist for backend-admin-plane-2026-0
 - Batch date: 2026-03-29
 - Completed tasks:
   - Updated `deploy/Dockerfile` to multi-stage build: Node.js (frontend) + Rust (backend).
-  - Bundled `backend/web/dist` into the production image at `/usr/local/bin/admin-web/dist`.
+  - Bundled `backend/web/dist` into the production image at `/usr/local/bin/web/dist`.
   - Updated `README.md` and `deploy/README.md` with Admin Plane architecture and access instructions.
   - Added `admin_assets_path` to `ServerConfig` for environment-specific asset discovery.
   - Verified final routing isolation (API 404s vs SPA fallback) and auth separation via integration tests.

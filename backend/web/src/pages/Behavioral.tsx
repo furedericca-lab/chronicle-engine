@@ -64,7 +64,7 @@ export function Behavioral() {
                       <td>{m.id.substring(0, 8)}...</td>
                       <td>{m.behavioralKind || '-'}</td>
                       <td>{m.textPreview}</td>
-                      <td>{m.source}</td>
+                      <td>{m.source?.sourceKind || '-'}</td>
                       <td>{new Date(m.createdAt).toLocaleString()}</td>
                     </tr>
                   ))}

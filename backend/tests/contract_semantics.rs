@@ -40,6 +40,7 @@ fn make_config(tmp: &Path) -> AppConfig {
     AppConfig {
         server: ServerConfig {
             bind: "127.0.0.1:0".to_string(),
+            admin_assets_path: std::path::PathBuf::from("web/dist"),
         },
         storage: StorageConfig {
             lancedb_path: tmp.join("lancedb"),
