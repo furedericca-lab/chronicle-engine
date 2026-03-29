@@ -119,14 +119,39 @@ token = "replace-with-admin-bearer-token"
 - Both use `Authorization: Bearer <token>`.
 - They are intentionally not interchangeable.
 
-For Docker deployments, the image already contains a default `backend.toml`. The recommended override path is Docker Compose `environment:` keys using the `CHRONICLE_` prefix and double underscores for nested TOML tables, for example:
+For Docker deployments, the image already contains a default `backend.toml`. The recommended override path is Docker Compose `environment:` keys using nested TOML paths with double underscores, for example:
 
 ```yaml
 environment:
-  CHRONICLE_AUTH__RUNTIME__TOKEN: "${CHRONICLE_AUTH_RUNTIME_TOKEN}"
-  CHRONICLE_AUTH__ADMIN__TOKEN: "${CHRONICLE_AUTH_ADMIN_TOKEN}"
-  CHRONICLE_PROVIDERS__EMBEDDING__API_KEY: "${CHRONICLE_EMBEDDING_API_KEY}"
+  AUTH__RUNTIME__TOKEN: "${RUNTIME_TOKEN}"
+  AUTH__ADMIN__TOKEN: "${ADMIN_TOKEN}"
+  PROVIDERS__EMBEDDING__API_KEY: "${EMBEDDING_API_KEY}"
 ```
+
+Common Docker Compose overrides:
+
+| Environment variable | TOML key | Purpose | Expected format | Example |
+|---|---|---|---|---|
+| `AUTH__RUNTIME__TOKEN` | `auth.runtime.token` | Bearer token for `/v1/*` data-plane requests | non-empty string | `AUTH__RUNTIME__TOKEN=prod-runtime-token` |
+| `AUTH__ADMIN__TOKEN` | `auth.admin.token` | Bearer token for `/admin/api/*` admin-plane requests | non-empty string | `AUTH__ADMIN__TOKEN=prod-admin-token` |
+| `SERVER__BIND` | `server.bind` | Backend listen address inside the container | `host:port` string | `SERVER__BIND=0.0.0.0:8080` |
+| `SERVER__ADMIN_ASSETS_PATH` | `server.admin_assets_path` | Filesystem path to bundled admin SPA assets | absolute path string | `SERVER__ADMIN_ASSETS_PATH=/usr/local/bin/web/dist` |
+| `STORAGE__LANCEDB_PATH` | `storage.lancedb_path` | LanceDB data directory | absolute path string | `STORAGE__LANCEDB_PATH=/var/lib/chronicle-engine-backend/lancedb` |
+| `STORAGE__SQLITE_PATH` | `storage.sqlite_path` | SQLite job/audit database path | absolute path string | `STORAGE__SQLITE_PATH=/var/lib/chronicle-engine-backend/sqlite/jobs.db` |
+| `LOGGING__LEVEL` | `logging.level` | Backend log verbosity | string such as `trace` / `debug` / `info` / `warn` / `error` | `LOGGING__LEVEL=info` |
+| `PROVIDERS__EMBEDDING__BASE_URL` | `providers.embedding.base_url` | Embedding provider base URL | URL string | `PROVIDERS__EMBEDDING__BASE_URL=https://api.openai.com/v1` |
+| `PROVIDERS__EMBEDDING__MODEL` | `providers.embedding.model` | Embedding model id | string | `PROVIDERS__EMBEDDING__MODEL=text-embedding-3-small` |
+| `PROVIDERS__EMBEDDING__API` | `providers.embedding.api` | Embedding provider API flavor | string such as `openai` / `builtin` | `PROVIDERS__EMBEDDING__API=openai` |
+| `PROVIDERS__EMBEDDING__API_KEY` | `providers.embedding.api_key` | Embedding provider API key | non-empty string | `PROVIDERS__EMBEDDING__API_KEY=sk-...` |
+| `PROVIDERS__RERANK__ENABLED` | `providers.rerank.enabled` | Enable or disable provider-backed rerank | boolean `true` / `false` | `PROVIDERS__RERANK__ENABLED=false` |
+
+Path-style rule:
+
+- Use `TABLE__SUBTABLE__KEY` to map an environment variable to a nested TOML key.
+- Strings stay plain strings.
+- Booleans use `true` or `false`.
+- Numbers use normal integer or float literals.
+- Unknown path-style variables are ignored.
 
 ### Post-deploy smoke checks
 
@@ -139,11 +164,11 @@ docker compose -f deploy/docker-compose.yml config >/dev/null
 curl -fsS http://127.0.0.1:8080/admin >/dev/null
 
 curl -fsS \
-  -H "Authorization: Bearer $CHRONICLE_ADMIN_TOKEN" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://127.0.0.1:8080/admin/api/settings/runtime-config
 
 curl -fsS \
-  -H "Authorization: Bearer $CHRONICLE_RUNTIME_TOKEN" \
+  -H "Authorization: Bearer $RUNTIME_TOKEN" \
   -H "X-OpenClaw-User-Id: smoke-user" \
   -H "X-OpenClaw-Agent-Id: smoke-agent" \
   -H "Content-Type: application/json" \
@@ -151,7 +176,7 @@ curl -fsS \
   http://127.0.0.1:8080/v1/recall/generic
 
 curl -s -o /dev/null -w "%{http_code}\n" \
-  -H "Authorization: Bearer $CHRONICLE_ADMIN_TOKEN" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "X-OpenClaw-User-Id: smoke-user" \
   -H "X-OpenClaw-Agent-Id: smoke-agent" \
   -H "Content-Type: application/json" \
@@ -159,7 +184,7 @@ curl -s -o /dev/null -w "%{http_code}\n" \
   http://127.0.0.1:8080/v1/recall/generic
 
 curl -s -o /dev/null -w "%{http_code}\n" \
-  -H "Authorization: Bearer $CHRONICLE_RUNTIME_TOKEN" \
+  -H "Authorization: Bearer $RUNTIME_TOKEN" \
   http://127.0.0.1:8080/admin/api/settings/runtime-config
 ```
 
@@ -179,7 +204,7 @@ Settings save is persisted atomically but still requires restart to take full ef
 ```bash
 curl -fsS \
   -X PUT \
-  -H "Authorization: Bearer $CHRONICLE_ADMIN_TOKEN" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d @- \
   http://127.0.0.1:8080/admin/api/settings/runtime-config <<'JSON'
@@ -187,7 +212,7 @@ curl -fsS \
 JSON
 
 curl -fsS \
-  -H "Authorization: Bearer $CHRONICLE_RUNTIME_TOKEN" \
+  -H "Authorization: Bearer $RUNTIME_TOKEN" \
   -H "X-OpenClaw-User-Id: smoke-user" \
   -H "X-OpenClaw-Agent-Id: smoke-agent" \
   -H "Content-Type: application/json" \

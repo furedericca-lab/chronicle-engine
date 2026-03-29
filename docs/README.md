@@ -5,13 +5,14 @@ This directory keeps the current operator/runtime references and two intentional
 Current documents:
 
 - `backend-admin-plane-2026-03-27/`: active phased scope for adding a bundled admin plane under `/admin` and `/admin/api/*`, wiring live admin auth/logging, and tightening duplicated recall flow while preserving the Rust backend as sole authority.
+- `backend-default-config-relocation-2026-03-29/`: active single-contract scope for moving the baked backend default config source from `deploy/` into `backend/` so backend-owned runtime defaults no longer live under deploy-only scaffolding.
 - `runtime-architecture.md`: canonical runtime split and source-of-truth boundaries.
 
 Historical and superseded material:
 
 - `archive/`: completed plans, architecture transition docs, closeout contracts, and stale operator notes preserved for reference.
 - `archive-index.md`: top-level archive map for the preserved historical scopes.
-- `archive/backend-env-config-2026-03-29/`: archived single-contract scope for baking a default backend config into the image and supporting `CHRONICLE_*` environment overrides so Docker Compose no longer requires a mounted `backend.toml` by default.
+- `archive/backend-env-config-2026-03-29/`: archived single-contract scope for baking a default backend config into the image and supporting path-style environment overrides so Docker Compose no longer requires a mounted `backend.toml` by default.
 - `archive/ghcr-version-retention-2026-03-27/`: archived phased scope for adding workflow-enforced GHCR cleanup so `chronicle-engine-backend` keeps only the newest 10 package versions after successful non-PR publishes.
 - `archive/backend-admin-plane-merge-fix-2026-03-29/`: archived phased repair scope for fixing the merged admin-plane regressions, converging the admin API surface back to the parent contract, and restoring a truthful Settings write path plus the backend verification line.
 - `archive/backend-binary-rename-chronicle-engine-rs-2026-03-26/`: archived single-contract scope for renaming the Rust backend crate/lib/bin surface to `chronicle-engine-rs` / `chronicle_engine_rs` while intentionally keeping deploy image naming stable.

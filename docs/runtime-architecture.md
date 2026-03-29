@@ -58,7 +58,7 @@
 - Tool bridge: `src/backend-tools.ts`
 - Prompt orchestration: `src/context/*`
 - Rust backend implementation: `backend/src/*`
-- Deployment examples: `deploy/README.md`, `deploy/backend.toml.example`, `deploy/docker-compose.yml`
+- Deployment examples: `deploy/README.md`, `backend/backend.default.toml`, `deploy/docker-compose.yml`
 
 ## Historical material
 

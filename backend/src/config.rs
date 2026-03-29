@@ -505,13 +505,16 @@ fn apply_env_overrides(root: &mut Value) -> Result<()> {
     };
 
     let mut override_keys: Vec<(String, String)> = env::vars()
-        .filter(|(key, _)| key.starts_with("CHRONICLE_"))
+        .filter(|(key, _)| key.contains("__"))
         .collect();
     override_keys.sort_by(|left, right| left.0.cmp(&right.0));
 
     for (key, raw_value) in override_keys {
         let path = parse_env_override_key(&key)?;
         if path.is_empty() {
+            continue;
+        }
+        if !config_path_exists(table, &path) {
             continue;
         }
         apply_env_override_path(table, &path, &raw_value)
@@ -521,13 +524,10 @@ fn apply_env_overrides(root: &mut Value) -> Result<()> {
 }
 
 fn parse_env_override_key(key: &str) -> Result<Vec<String>> {
-    let suffix = key
-        .strip_prefix("CHRONICLE_")
-        .ok_or_else(|| anyhow::anyhow!("override key must start with CHRONICLE_"))?;
-    if suffix.is_empty() || !suffix.contains("__") {
+    if key.is_empty() || !key.contains("__") {
         return Ok(Vec::new());
     }
-    let path: Vec<String> = suffix
+    let path: Vec<String> = key
         .split("__")
         .map(|part| part.trim().to_ascii_lowercase())
         .collect();
@@ -535,6 +535,22 @@ fn parse_env_override_key(key: &str) -> Result<Vec<String>> {
         anyhow::bail!("override key contains an empty path segment");
     }
     Ok(path)
+}
+
+fn config_path_exists(table: &toml::map::Map<String, Value>, path: &[String]) -> bool {
+    let Some((head, tail)) = path.split_first() else {
+        return false;
+    };
+    let Some(value) = table.get(head) else {
+        return false;
+    };
+    if tail.is_empty() {
+        return true;
+    }
+    let Some(child) = value.as_table() else {
+        return false;
+    };
+    config_path_exists(child, tail)
 }
 
 fn apply_env_override_path(
@@ -675,10 +691,10 @@ diagnostics = false
         let path = std::env::temp_dir().join(format!("chronicle-config-{unique}.toml"));
         write_test_config(&path);
 
-        std::env::set_var("CHRONICLE_AUTH__RUNTIME__TOKEN", "runtime-override");
-        std::env::set_var("CHRONICLE_LOGGING__LEVEL", "debug");
-        std::env::set_var("CHRONICLE_RETRIEVAL__MMR_DIVERSITY", "false");
-        std::env::set_var("CHRONICLE_RETRIEVAL__VECTOR_WEIGHT", "0.55");
+        std::env::set_var("AUTH__RUNTIME__TOKEN", "runtime-override");
+        std::env::set_var("LOGGING__LEVEL", "debug");
+        std::env::set_var("RETRIEVAL__MMR_DIVERSITY", "false");
+        std::env::set_var("RETRIEVAL__VECTOR_WEIGHT", "0.55");
 
         let cfg = AppConfig::load(&path).expect("load with env overrides");
         assert_eq!(cfg.auth.runtime.token, "runtime-override");
@@ -686,15 +702,15 @@ diagnostics = false
         assert!(!cfg.retrieval.mmr_diversity);
         assert!((cfg.retrieval.vector_weight - 0.55).abs() < f64::EPSILON);
 
-        std::env::remove_var("CHRONICLE_AUTH__RUNTIME__TOKEN");
-        std::env::remove_var("CHRONICLE_LOGGING__LEVEL");
-        std::env::remove_var("CHRONICLE_RETRIEVAL__MMR_DIVERSITY");
-        std::env::remove_var("CHRONICLE_RETRIEVAL__VECTOR_WEIGHT");
+        std::env::remove_var("AUTH__RUNTIME__TOKEN");
+        std::env::remove_var("LOGGING__LEVEL");
+        std::env::remove_var("RETRIEVAL__MMR_DIVERSITY");
+        std::env::remove_var("RETRIEVAL__VECTOR_WEIGHT");
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn load_rejects_unknown_environment_override_paths() {
+    fn load_ignores_unknown_environment_override_paths() {
         let _guard = env_lock().lock().expect("env lock");
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -703,11 +719,10 @@ diagnostics = false
         let path = std::env::temp_dir().join(format!("chronicle-config-{unique}.toml"));
         write_test_config(&path);
 
-        std::env::set_var("CHRONICLE_UNKNOWN__KEY", "value");
-        let err = AppConfig::load(&path).expect_err("unknown override should fail");
-        let message = format!("{err:#}");
-        assert!(message.contains("CHRONICLE_UNKNOWN__KEY"));
-        std::env::remove_var("CHRONICLE_UNKNOWN__KEY");
+        std::env::set_var("UNKNOWN__KEY", "value");
+        let cfg = AppConfig::load(&path).expect("unknown override should be ignored");
+        assert_eq!(cfg.auth.runtime.token, "runtime-default");
+        std::env::remove_var("UNKNOWN__KEY");
         let _ = fs::remove_file(path);
     }
 }
